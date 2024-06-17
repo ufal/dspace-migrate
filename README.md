@@ -1,5 +1,3 @@
-[![Test dspace on dev-5](https://github.com/dataquest-dev/dspace-blackbox-testing/actions/workflows/test.yml/badge.svg)](https://github.com/dataquest-dev/dspace-blackbox-testing/actions/workflows/test.yml)
-
 # Dspace-python-api
 used for blackbox testing, data-ingestion procedures
 
@@ -15,7 +13,7 @@ because we use this endpoint for importing existing data.
 ### Prerequisites:
 1. Install CLARIN-DSpace7.*. (postgres, solr, dspace backend)
 
-2.1. Clone python-api: https://github.com/dataquest-dev/dspace-python-api (branch `main`) and https://github.com/dataquest-dev/DSpace (branch `dtq-dev`)
+2.1. Clone python-api: https://github.com/ufal/dspace-python-api (branch `main`) and https://github.com/ufal/DSpace (branch `clarin-v7`)
 2.2. Clone submodules:
 2.2.1.: `git submodule update --init libs/dspace-rest-python/`
 
