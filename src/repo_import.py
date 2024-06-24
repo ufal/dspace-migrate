@@ -52,6 +52,9 @@ if __name__ == "__main__":
     parser.add_argument('--config',
                         help='Update configs',
                         required=False, type=str, action='append')
+    parser.add_argument('--assetstore',
+                        help='Location of assetstore folder',
+                        required=False, type=str, default="")
 
     args = parser.parse_args()
     s = time.time()
@@ -66,6 +69,9 @@ if __name__ == "__main__":
         else:
             new_val = type(prev_val)(v)
         set_key(k, new_val, env)
+
+    # add assetstore folder location to env
+    env["assetstore"] = args.assetstore
 
     # just in case
     # verify_disabled_mailserver()

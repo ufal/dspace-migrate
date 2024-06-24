@@ -3,6 +3,8 @@ import os
 import logging
 from datetime import datetime, timezone
 from time import time as time_fnc
+from pathlib import Path
+
 _logger = logging.getLogger("pump.utils")
 
 
@@ -126,3 +128,8 @@ def log_before_import(msg: str, expected: int):
 def log_after_import(msg: str, expected: int, imported: int):
     prefix = "OK " if expected == imported else "!!! WARN !!! "
     _logger.info(f"{prefix}Imported [{imported: >4d}] {msg}")
+
+
+def path_exists(path):
+    path_obj = Path(path)
+    return path_obj.exists()
