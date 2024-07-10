@@ -25,6 +25,9 @@ class items:
         ["workspaceitem", {
         }],
         ["collection2item", {
+            "len": {
+                "sql": "select distinct collection_id, item_id from public.collection2item group by collection_id, item_id",
+            }
         }],
     ]
 
