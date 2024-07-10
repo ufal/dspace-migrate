@@ -3,7 +3,6 @@ import os
 import logging
 from datetime import datetime, timezone
 from time import time as time_fnc
-from pathlib import Path
 
 _logger = logging.getLogger("pump.utils")
 
@@ -89,7 +88,8 @@ def serialize(file_str: str, data, sorted=True):
                 keys = list(v.keys())
                 if len(keys) > 0:
                     if isinstance(keys[0], int):
-                        _logger.critical(f"Serializing dictionary with integer keys [{file_str}] !!!")
+                        _logger.critical(
+                            f"Serializing dictionary with integer keys [{file_str}] !!!")
 
     os.makedirs(os.path.dirname(file_str), exist_ok=True)
     with open(file_str, encoding="utf-8", mode="w") as fout:
@@ -128,8 +128,3 @@ def log_before_import(msg: str, expected: int):
 def log_after_import(msg: str, expected: int, imported: int):
     prefix = "OK " if expected == imported else "!!! WARN !!! "
     _logger.info(f"{prefix}Imported [{imported: >4d}] {msg}")
-
-
-def path_exists(path):
-    path_obj = Path(path)
-    return path_obj.exists()

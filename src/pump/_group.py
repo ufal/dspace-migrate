@@ -123,7 +123,7 @@ class groups:
                 continue
 
             other_groups.append(group)
-        _logger.info(
+        _logger.debug(
             f"Loaded groups [{self._id2uuid}], other groups:[{len(other_groups)}]")
         return self
 

@@ -81,7 +81,6 @@ e.g.,`handle.additional.prefixes = 11858, 11234, 11372, 11346, 20.500.12801, 20.
 - The values of table attributes that describe the last modification time of dspace object (for example attribute `last_modified` in table `Item`) have a value that represents the time when that object was migrated and not the value from migrated database dump.
 - If you don't have valid and complete data, not all data will be imported.
 
-## Vanilla import check
-1. Run Vanilla import based on instruction: https://wiki.lyrasis.org/display/DSDOC7x/Migrating+DSpace+to+a+new+server
-2. Update `tul_settings.py`
-3. run `cd ./src && python dtb_difference.py`
+## Check import consistency
+
+Use `tools/repo_diff` utility, see [README](tools/repo_diff/README.md).

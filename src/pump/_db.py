@@ -1,3 +1,4 @@
+import os
 import sys
 import logging
 _logger = logging.getLogger("pump.db")
@@ -150,3 +151,130 @@ class db:
 
         _logger.info(f"\n{msg}Empty tables:\n\t{zero}")
         _logger.info(40 * "=")
+
+
+class differ:
+
+    def __init__(self, raw_db_dspace_5, raw_db_utilities_5, raw_db_7):
+        self.raw_db_dspace_5 = raw_db_dspace_5
+        self.raw_db_utilities_5 = raw_db_utilities_5
+        self.raw_db_7 = raw_db_7
+
+    def _fetch_all_vals(self, db5, table_name: str, sql: str = None):
+        sql = f"SELECT * FROM {table_name}"
+        cols5 = []
+        db5 = db5 or self.raw_db_dspace_5
+        vals5 = db5.fetch_all(sql, col_names=cols5)
+        cols7 = []
+        vals7 = self.raw_db_7.fetch_all(sql, col_names=cols7)
+        return cols5, vals5, cols7, vals7
+
+    def _filter_vals(self, vals, col_names, only_names):
+        idxs = [col_names.index(x) for x in only_names]
+        filtered = []
+        for row in vals:
+            filtered.append([row[idx] for idx in idxs])
+        return filtered
+
+    def _cmp_values(self, table_name: str, vals5, only_in_5, vals7, only_in_7, do_not_show: bool):
+        too_many_5 = ""
+        too_many_7 = ""
+        LIMIT = 5
+        if len(only_in_5) > LIMIT:
+            too_many_5 = f"!!! TOO MANY [{len(only_in_5)}] "
+        if len(only_in_7) > LIMIT:
+            too_many_7 = f"!!! TOO MANY [{len(only_in_7)}] "
+
+        do_not_show = do_not_show or "CI" in os.environ or "GITHUB_ACTION" in os.environ
+        # assume we do not have emails that we do not want to show in db7
+        if do_not_show:
+            only_in_5 = [x if "@" not in x else "....." for x in only_in_5]
+            only_in_7 = [x if "@" not in x else "....." for x in only_in_7]
+
+        _logger.info(f"Table [{table_name}]: v5:[{len(vals5)}], v7:[{len(vals7)}]\n"
+                     f"  {too_many_5}only in v5:[{only_in_5[:LIMIT]}]\n"
+                     f"  {too_many_7}only in v7:[{only_in_7[:LIMIT]}]")
+
+    def diff_table_cmp_cols(self, db5, table_name: str, compare_arr: list, gdpr: bool = True):
+        cols5, vals5, cols7, vals7 = self._fetch_all_vals(db5, table_name)
+        do_not_show = gdpr and "email" in compare_arr
+
+        filtered5 = self._filter_vals(vals5, cols5, compare_arr)
+        vals5_cmp = ["|".join(str(x) for x in x) for x in filtered5]
+        filtered7 = self._filter_vals(vals7, cols7, compare_arr)
+        vals7_cmp = ["|".join(str(x) for x in x) for x in filtered7]
+
+        only_in_5 = list(set(vals5_cmp).difference(vals7_cmp))
+        only_in_7 = list(set(vals7_cmp).difference(vals5_cmp))
+        if len(only_in_5) + len(only_in_7) == 0:
+            _logger.info(f"Table [{table_name: >20}] is THE SAME in v5 and v7!")
+            return
+        self._cmp_values(table_name, vals5, only_in_5, vals7, only_in_7, do_not_show)
+
+    def diff_table_cmp_len(self, db5, table_name: str, nonnull: list = None, gdpr: bool = True):
+        nonnull = nonnull or []
+        cols5, vals5, cols7, vals7 = self._fetch_all_vals(db5, table_name)
+        do_not_show = gdpr and "email" in nonnull
+
+        msg = " OK " if len(vals5) == len(vals7) else " !!! WARN !!! "
+        _logger.info(
+            f"Table [{table_name: >20}] {msg} compared by len only v5:[{len(vals5)}], v7:[{len(vals7)}]")
+
+        for col_name in nonnull:
+            vals5_cmp = [x for x in self._filter_vals(
+                vals5, cols5, [col_name]) if x[0] is not None]
+            vals7_cmp = [x for x in self._filter_vals(
+                vals7, cols7, [col_name]) if x[0] is not None]
+
+            msg = " OK " if len(vals5_cmp) == len(vals7_cmp) else " !!! WARN !!! "
+            _logger.info(
+                f"Table [{table_name: >20}] {msg}  NON NULL [{col_name:>15}] v5:[{len(vals5_cmp):3}], v7:[{len(vals7_cmp):3}]")
+
+    def diff_table_sql(self, db5, table_name: str, sql5, sql7, compare, process_ftor):
+        cols5 = []
+        vals5 = db5.fetch_all(sql5, col_names=cols5)
+        cols7 = []
+        vals7 = self.raw_db_7.fetch_all(sql7, col_names=cols7)
+        # special case where we have different names of columns but only one column to compare
+        if compare == 0:
+            vals5_cmp = [x[0] for x in vals5 if x[0] is not None]
+            vals7_cmp = [x[0] for x in vals7 if x[0] is not None]
+        elif compare is None:
+            vals5_cmp = vals5
+            vals7_cmp = vals7
+        else:
+            vals5_cmp = [x[0] for x in self._filter_vals(
+                vals5, cols5, [compare]) if x[0] is not None]
+            vals7_cmp = [x[0] for x in self._filter_vals(
+                vals7, cols7, [compare]) if x[0] is not None]
+
+        if process_ftor is not None:
+            vals5_cmp, vals7_cmp = process_ftor(self, vals5_cmp, vals7_cmp)
+
+        only_in_5 = list(set(vals5_cmp).difference(vals7_cmp))
+        only_in_7 = list(set(vals7_cmp).difference(vals5_cmp))
+        self._cmp_values(table_name, vals5, only_in_5, vals7, only_in_7, False)
+
+    def validate(self, to_validate):
+        for valid_defs in to_validate:
+            for table_name, defin in valid_defs:
+                _logger.info("=" * 10 + f" Validating {table_name} " + "=" * 10)
+                db5_name = defin.get("db", "clarin-dspace")
+                db5 = self.raw_db_dspace_5 if db5_name == "clarin-dspace" else self.raw_db_utilities_5
+
+                cmp = defin.get("compare", None)
+                if cmp is not None:
+                    self.diff_table_cmp_cols(db5, table_name, cmp)
+
+                cmp = defin.get("nonnull", None)
+                if cmp is not None:
+                    self.diff_table_cmp_len(db5, table_name, cmp)
+
+                # compare only len
+                if len(defin) == 0:
+                    self.diff_table_cmp_len(db5, table_name)
+
+                cmp = defin.get("sql", None)
+                if cmp is not None:
+                    self.diff_table_sql(
+                        db5, table_name, cmp["5"], cmp["7"], cmp["compare"], cmp.get("process", None))

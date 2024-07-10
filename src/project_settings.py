@@ -13,6 +13,7 @@ settings = {
         "user": "test@test.edu",
         "password": "admin",
         "authentication": True,
+        "testing": True,
     },
 
     "ignore": {
