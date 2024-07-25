@@ -49,16 +49,18 @@ class sequences:
             db7_seq_val = db7.fetch_one(f"SELECT last_value FROM {dspace5_seq_name}")
             if seq_val == db7_seq_val:
                 continue
+            # TODO(jm): investigate the difference, for now use max!
+            new_seq_val = max(seq_val, db7_seq_val)
             _logger.critical(
-                f"Sequence [{dspace5_seq_name}] is not in sync [{seq_val}] != [{db7_seq_val}].")
+                f"Sequence [{dspace5_seq_name}] is not in sync v5:[{seq_val}] != v7:[{db7_seq_val}], using bigger value [{new_seq_val}]")
 
             # set value of the sequence in clarin 7 dspace database
-            db7.exe_sql(f"SELECT setval('{dspace5_seq_name}', {seq_val})")
+            db7.exe_sql(f"SELECT setval('{dspace5_seq_name}', {new_seq_val})")
 
             # check value of the sequence in clarin7 database
             db7_seq_val = db7.fetch_one(f"SELECT last_value FROM {dspace5_seq_name}")
-            if seq_val != db7_seq_val:
+            if new_seq_val != db7_seq_val:
                 _logger.error(
-                    f"{dspace5_seq_name}   --> [{seq_val}] does not match expected [{db7_seq_val}].")
+                    f"{dspace5_seq_name} --> [{new_seq_val}] does not match expected [{db7_seq_val}].")
 
         _logger.info("Sequence migration is complete.")
