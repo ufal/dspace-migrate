@@ -43,6 +43,11 @@ class sequences:
 
             # get current value of given sequence
             seq_val = db.fetch_one(f"SELECT last_value FROM {dspace5_seq_name}")
+            db7_seq_val = db7.fetch_one(f"SELECT last_value FROM {dspace5_seq_name}")
+            if seq_val == db7_seq_val:
+                continue
+            _logger.critical(
+                f"Sequence [{dspace5_seq_name}] is not in sync [{seq_val}] != [{db7_seq_val}].")
 
             # set value of the sequence in clarin 7 dspace database
             db7.exe_sql(f"SELECT setval('{dspace5_seq_name}', {seq_val})")
