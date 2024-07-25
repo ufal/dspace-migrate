@@ -35,6 +35,9 @@ class sequences:
             if dspace5_seq_name not in db7_seqs_names:
                 continue
 
+            if dspace5_seq_name in ["versionhistory_seq", "versionitem_seq"]:
+                continue
+
             # use cursor according to database to which sequence belongs
             if dspace5_seq_db == "clarin-dspace":
                 db = db5_dspace
