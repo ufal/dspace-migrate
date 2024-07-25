@@ -155,10 +155,14 @@ class db:
 
 class differ:
 
-    def __init__(self, raw_db_dspace_5, raw_db_utilities_5, raw_db_7):
+    def __init__(self, raw_db_dspace_5, raw_db_utilities_5, raw_db_7, repo=None):
+        """
+            Repo object might be needed by `"process":` to be able to compare values.
+        """
         self.raw_db_dspace_5 = raw_db_dspace_5
         self.raw_db_utilities_5 = raw_db_utilities_5
         self.raw_db_7 = raw_db_7
+        self._repo = repo
 
     def _fetch_all_vals(self, db5, table_name: str, sql: str = None):
         sql = sql or f"SELECT * FROM {table_name}"
@@ -258,7 +262,10 @@ class differ:
                 vals7, cols7, [compare]) if x[0] is not None]
 
         if process_ftor is not None:
-            vals5_cmp, vals7_cmp = process_ftor(self, vals5_cmp, vals7_cmp)
+            vals5_cmp, vals7_cmp = process_ftor(self._repo, vals5_cmp, vals7_cmp)
+            # ignored
+            if vals5_cmp is None and vals7_cmp is None:
+                return
 
         only_in_5 = list(set(vals5_cmp).difference(vals7_cmp))
         only_in_7 = list(set(vals7_cmp).difference(vals5_cmp))

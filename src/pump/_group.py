@@ -10,6 +10,11 @@ def _epersongroup_process(repo, v5data: list, v7data: list):
         v5: ['COLLECTION_17_DEFAULT_READ', 'COLLECTION_20_WORKFLOW_STEP_2']
         v7: ['COLLECTION_f3c65f29-355e-4ca2-a05b-f3e30883e09f_BITSTREAM_DEFAULT_READ']
     """
+    if repo is None:
+        _logger.critical(
+            "Cannot validate using _epersongroup_process because repo is None")
+        return None, None
+
     rec = re.compile("(COLLECTION|COMMUNITY)_(\d+)_(.*)")
     v5data_new = []
     for val in v5data:
