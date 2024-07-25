@@ -138,7 +138,8 @@ class repo:
                 return
             to_validate = [to_validate.validate_table]
 
-        diff = differ(self.raw_db_dspace_5, self.raw_db_utilities_5, self.raw_db_7, repo)
+        diff = differ(self.raw_db_dspace_5, self.raw_db_utilities_5,
+                      self.raw_db_7, repo=self)
         diff.validate(to_validate)
 
     # =====
