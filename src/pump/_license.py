@@ -184,16 +184,21 @@ def update_license_def(env, lic_def_url: str):
     env_lic = env.get("licenses", {})
     if "to_replace_def_url" not in env_lic:
         _logger.info(
-            "License def URL is not replaced, absolute path to the new repo must math the old one!")
+            "License def URL is not replaced, absolute"
+            "path to the new repo must match the old one!")
         return lic_def_url
 
     # Replace old site url to a new site url
     if env_lic["to_replace_def_url"] in lic_def_url:
+        if 'XXX' in env_lic['replace_with_def_url']:
+            _logger.warning(f"New license contains XXX and is probably misconfigured: "
+                            f"{lic_def_url}")
         lic_def_url = lic_def_url.replace(
             env_lic["to_replace_def_url"],
             env_lic["replace_with_def_url"]
         )
-        # File name has a missing `.html` suffix -> add that suffix to the end of the definition url
+        # File name has a missing `.html` suffix -> add that suffix
+        # to the end of the definition url
         lic_def_url += '.html'
 
     return lic_def_url
