@@ -59,7 +59,7 @@ if __name__ == "__main__":
         "name": args.database,
         "host": args.host,
         "user": args.user,
-        "port": 5432,
+        "port": args.port,
         "password": args.password,
     })
 
