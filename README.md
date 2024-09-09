@@ -13,14 +13,17 @@ because we use this endpoint for importing existing data.
 ### Prerequisites:
 1. Install CLARIN-DSpace7.*. (postgres, solr, dspace backend)
 
-2.1. Clone python-api: https://github.com/ufal/dspace-python-api (branch `main`) and https://github.com/ufal/DSpace (branch `clarin-v7`)
-2.2. Clone submodules:
-2.2.1.: `git submodule update --init libs/dspace-rest-python/`
+2. get sources
+
+    2.1. Clone python-api: https://github.com/ufal/dspace-python-api (branch `main`)
+
+    2.2. Clone submodules:
+`git submodule update --init libs/dspace-rest-python/`
 
 
-4. Get database dump (old CLARIN-DSpace) and unzip it into `input/dump` directory in `dspace-python-api` project.
+3. Get database dump (old CLARIN-DSpace) and unzip it into `input/dump` directory in `dspace-python-api` project.
 
-5. Create CLARIN-DSpace5.* databases (dspace, utilities) from dump.
+4. Create CLARIN-DSpace5.* databases (dspace, utilities) from dump.
 Run `scripts/start.local.dspace.db.bat` or use `scipts/init.dspacedb5.sh` directly with your database.
 
 ***
@@ -36,9 +39,10 @@ Run `scripts/start.local.dspace.db.bat` or use `scipts/init.dspacedb5.sh` direct
 ```
 pip install -r requirements.txt
 (optional on ubuntu like systems) apt install libpq-dev
-python db_to_json.py --database=clarin-dspace
-python db_to_json.py --database=clarin-utilities
+python tools/db_to_json.py --database=clarin-dspace [--port] [--host] [--user] [--password]
+python tools/db_to_json.py --database=clarin-utilities  [--port] [--host] [--user] [--password]
 ```
+If you omit `--user` the value from `project_settings.py` will be used.
 
 ***
 8. Prepare `dspace-python-api` project for migration
