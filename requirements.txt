@@ -1,7 +1,7 @@
 bs4
 requests
 lxml
-psycopg2
+psycopg2-binary
 pre-commit
 tqdm
 requests-toolbelt
