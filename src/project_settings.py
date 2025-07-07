@@ -9,7 +9,7 @@ settings = {
     "resume_dir": "__temp/resume/",
 
     "backend": {
-        "endpoint": "http://dev-5.pc:85/server/api/",
+        "endpoint": "http://dev-5.pc:85/server/api",  # without trailing slash
         "user": "test@test.edu",
         "password": "admin",
         "authentication": True,
