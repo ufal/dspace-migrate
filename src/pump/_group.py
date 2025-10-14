@@ -70,8 +70,8 @@ class groups:
     DEF_GID_ADMIN = "1"
 
     def __init__(self, eperson_file_str: str, g2g_file_str: str):
-        self._eperson = read_json(eperson_file_str)
-        self._g2g = read_json(g2g_file_str)
+        self._eperson = read_json(eperson_file_str) or []
+        self._g2g = read_json(g2g_file_str) or []
         self._imported = {
             "eperson": 0,
             "group": 0,
@@ -86,10 +86,10 @@ class groups:
         self._id2uuid = {}
 
         if not self._eperson:
-            _logger.info(f"Empty input collections: [{eperson_file_str}].")
+            _logger.info(f"Empty input: [{eperson_file_str}].")
 
         if not self._g2g:
-            _logger.info(f"Empty input collections: [{g2g_file_str}].")
+            _logger.info(f"Empty input: [{g2g_file_str}].")
 
     @property
     def imported_eperson(self):

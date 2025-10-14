@@ -112,18 +112,18 @@ class usermetadatas:
 
     def serialize(self, file_str: str):
         data = {
-            "umeta": self._umeta or {},
-            "uallowance": self._uallowance or {},
-            "rmap": self._rmap or {},
-            "id2uuid": self._id2uuid or {},
-            "imported": self._imported or {"um": 0},
+            "umeta": self._umeta,
+            "uallowance": self._uallowance,
+            "rmap": self._rmap,
+            "id2uuid": self._id2uuid,
+            "imported": self._imported,
         }
         serialize(file_str, data)
 
     def deserialize(self, file_str: str):
         data = deserialize(file_str) or {}
-        self._umeta = data.get("umeta") or {}
-        self._uallowance = data.get("uallowance") or {}
-        self._rmap = data.get("rmap") or {}
-        self._id2uuid = data.get("id2uuid") or {}
-        self._imported = data.get("imported") or {"um": 0}
+        self._umeta = data.get("umeta", {})
+        self._uallowance = data.get("uallowance", {})
+        self._rmap = data.get("rmap", {})
+        self._id2uuid = data.get("id2uuid", {})
+        self._imported = data.get("imported", {"um": 0})

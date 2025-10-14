@@ -112,3 +112,48 @@ e.g.,`handle.additional.prefixes = 11858, 11234, 11372, 11346, 20.500.12801, 20.
 ## Check import consistency
 
 Use `tools/repo_diff` utility, see [README](tools/repo_diff/README.md).
+
+## Testing with Empty Tables
+
+The migration script supports testing functionality with empty tables to verify the import process without actual data. 
+
+### Setup
+
+Before using the `--test` option, you need to create the test JSON file:
+
+1. **Create the test JSON file**: Create a file named `test.json` in the `input/test/` directory with the following content:
+   ```json
+   null
+   ```
+
+2. **Configure the test settings**: The test configuration is set in `src/project_settings.py`:
+   ```python
+   "input": {
+       "test": os.path.join(_this_dir, "../input/test"),
+       "test_json_filename": "test.json",
+   }
+   ```
+   
+   You can change the `test_json_filename` to use a different filename if needed.
+
+### Usage
+
+To run the migration with empty table testing, use the `--test` option followed by the table names you want to test with empty data.
+
+### Examples
+
+```bash
+cd ./src && python repo_import.py --test usermetadatas
+```
+
+```bash
+cd ./src && python repo_import.py --test usermetadatas resourcepolicies
+```
+
+### How it Works
+
+When the `--test` option is specified with table names:
+1. Instead of loading actual data from database exports, the system loads the configured test JSON file (default: `test.json`) which contains `null`
+2. This simulates empty tables during the import process
+3. The migration logic is tested without requiring actual data
+4. The test JSON filename can be customized in `project_settings.py` under `"input"["test_json_filename"]`

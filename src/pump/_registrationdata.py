@@ -17,7 +17,9 @@ class registrationdatas:
     ]
 
     def __init__(self, col_rd_str: str):
-        self._rd = read_json(col_rd_str)
+        self._rd = read_json(col_rd_str) or []
+        if not self._rd:
+            _logger.info(f"Empty input: [{col_rd_str}].")
         self._imported = {
             "rd": 0,
             "missing_email": 0,

@@ -38,9 +38,9 @@ class licenses:
                  license_labels_file_str: str,
                  license_defs_file_str: str,
                  license_map_file_str: str):
-        self._labels = read_json(license_labels_file_str)
-        self._licenses = read_json(license_defs_file_str)
-        self._map = read_json(license_map_file_str)
+        self._labels = read_json(license_labels_file_str) or []
+        self._licenses = read_json(license_defs_file_str) or []
+        self._map = read_json(license_map_file_str) or []
 
         self._license2label = {}
         self._created_labels = {}

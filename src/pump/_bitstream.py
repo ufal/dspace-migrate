@@ -38,8 +38,8 @@ class bitstreams:
     ]
 
     def __init__(self, bitstream_file_str: str, bundle2bitstream_file_str: str):
-        self._bs = read_json(bitstream_file_str)
-        self._bundle2bs = read_json(bundle2bitstream_file_str)
+        self._bs = read_json(bitstream_file_str) or []
+        self._bundle2bs = read_json(bundle2bitstream_file_str) or []
 
         self._id2uuid = {}
         self._imported = {
@@ -47,6 +47,9 @@ class bitstreams:
             "com_logo": 0,
             "col_logo": 0,
         }
+
+        if not self._bundle2bs:
+            _logger.info(f"Empty input: [{bundle2bitstream_file_str}].")
 
         if not self._bs:
             _logger.info(f"Empty input: [{bitstream_file_str}].")

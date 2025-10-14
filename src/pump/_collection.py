@@ -24,25 +24,26 @@ class collections:
     BITSTREAM = "BITSTREAM"
 
     def __init__(self, col_file_str: str, com2col_file_str: str, metadata_file_str: str):
-        self._col = read_json(col_file_str)
-        self._com2col = read_json(com2col_file_str)
+        self._col = read_json(col_file_str) or []
+        self._com2col = read_json(com2col_file_str) or []
         self._imported = {
             "col": 0,
             "group": 0,
         }
-        self._metadata_values = read_json(metadata_file_str)
+        self._metadata_values = read_json(metadata_file_str) or []
         self._id2uuid = {}
 
         self._logos = {}
         self._groups_id2uuid = {}
         self._groups_uuid2type = {}
 
-        if not self._col:
-            _logger.info(f"Empty input collections: [{col_file_str}].")
-            return
-
         if not self._com2col:
-            _logger.info(f"Empty input community2collection: [{com2col_file_str}].")
+            _logger.info(f"Empty input: [{com2col_file_str}].")
+
+        if not self._col:
+            _logger.info(f"Empty input: [{col_file_str}].")
+
+        if not self._com2col or not self._col:
             return
 
         # because the role DEFAULT_READ is without old group id in collection

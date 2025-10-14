@@ -51,7 +51,16 @@ class repo:
                               for x in arr]
 
         def _f(table_name):
-            """ Dynamically export the table to json file and return path to it in v5. """
+            """
+                Dynamically export the table to JSON or,
+                if its name is in env["test"], load configured test JSON file for testing instead.
+            """
+            if table_name in env.get("test", []):
+                test_json_path = os.path.join(
+                    env["input"]["test"], env["input"]["test_json_filename"])
+                if not os.path.exists(test_json_path):
+                    raise FileNotFoundError(f"Test JSON file not found: {test_json_path}")
+                return test_json_path
             os.makedirs(env["input"]["tempdbexport_v5"], exist_ok=True)
             out_f = os.path.join(env["input"]["tempdbexport_v5"], f"{table_name}.json")
             if not env["tempdb"]:

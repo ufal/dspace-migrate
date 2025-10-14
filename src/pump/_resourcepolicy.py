@@ -36,7 +36,8 @@ class resourcepolicies:
     ]
 
     def __init__(self, resourcepolicy_file_str: str):
-        self._respol = read_json(resourcepolicy_file_str)
+        self._respol = read_json(resourcepolicy_file_str) or []
+
         if not self._respol:
             _logger.info(f"Empty input: [{resourcepolicy_file_str}].")
         self._id2uuid = {}

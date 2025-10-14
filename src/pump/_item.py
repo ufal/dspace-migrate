@@ -54,19 +54,19 @@ class items:
                  wf_file_str: str,
                  col2item_file_str: str):
 
-        self._items = read_json(item_file_str)
+        self._items = read_json(item_file_str) or []
         if not self._items:
             _logger.info(f"Empty input: [{item_file_str}].")
 
-        self._ws_items = read_json(ws_file_str)
+        self._ws_items = read_json(ws_file_str) or []
         if not self._ws_items:
             _logger.info(f"Empty input: [{ws_file_str}].")
 
-        self._wf_items = read_json(wf_file_str)
+        self._wf_items = read_json(wf_file_str) or []
         if not self._wf_items:
             _logger.info(f"Empty input: [{wf_file_str}].")
 
-        self._col2item = read_json(col2item_file_str)
+        self._col2item = read_json(col2item_file_str) or []
         if not self._col2item:
             _logger.info(f"Empty input: [{col2item_file_str}].")
 

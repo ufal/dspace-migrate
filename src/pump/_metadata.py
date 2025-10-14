@@ -154,8 +154,13 @@ class metadatas:
         self._dspace = dspace
         self._values = {}
 
-        self._field_v7 = read_json(field_file_v7_str)
-        self._schemas_v7 = read_json(schema_file_v7_str)
+        self._field_v7 = read_json(field_file_v7_str) or []
+        self._schemas_v7 = read_json(schema_file_v7_str) or []
+        if not self._field_v7:
+            _logger.info(f"Empty input: [{field_file_v7_str}].")
+        if not self._schemas_v7:
+            _logger.info(f"Empty input: [{schema_file_v7_str}].")
+
         self._schemas_id2short_id_v7 = {}
         for f in self._schemas_v7:
             self._schemas_id2short_id_v7[f['metadata_schema_id']] = f['short_id']
@@ -165,8 +170,13 @@ class metadatas:
                 f"{self._schemas_id2short_id_v7[f['metadata_schema_id']]}.{f['element']}.{f['qualifier']}"] =\
                 f['metadata_field_id']
 
-        self._fields_v5 = read_json(field_file_v5_str)
-        self._schemas_v5 = read_json(schema_file_v5_str)
+        self._fields_v5 = read_json(field_file_v5_str) or []
+        self._schemas_v5 = read_json(schema_file_v5_str) or []
+        if not self._fields_v5:
+            _logger.info(f"Empty input: [{field_file_v5_str}].")
+        if not self._schemas_v5:
+            _logger.info(f"Empty input: [{schema_file_v5_str}].")
+
         self._schema_id2short_id_v5 = {}
         for f in self._schemas_v5:
             self._schema_id2short_id_v5[f['metadata_schema_id']] = f['short_id']
@@ -211,7 +221,10 @@ class metadatas:
             sponsor_field_id = sponsors[0]['metadata_field_id']
 
         # norm
-        js_value = read_json(value_file_v5_str)
+        js_value = read_json(value_file_v5_str) or []
+        if not js_value:
+            _logger.info(f"Empty input: [{value_file_v5_str}].")
+
         for val in js_value:
             # replace separator @@ by ;
             val['text_value'] = val['text_value'].replace("@@", ";")

@@ -19,19 +19,23 @@ class communities:
     TYPE = 4
 
     def __init__(self, com_file_str: str, com2com_file_str: str):
-        self._com = read_json(com_file_str)
-        self._com2com = read_json(com2com_file_str)
+        self._com = read_json(com_file_str) or []
+        self._com2com = read_json(com2com_file_str) or []
         self._imported = {
             "com": 0,
             "group": 0,
             "com2com": 0,
         }
 
-        #
         self._id2uuid = {}
 
         self._logos = {}
         self._groups = {}
+
+        if not self._com:
+            _logger.info(f"Empty input: [{com_file_str}].")
+        if not self._com2com:
+            _logger.info(f"Empty input: [{com2com_file_str}].")
 
     def __len__(self):
         return len(self._com or {})

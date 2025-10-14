@@ -51,7 +51,7 @@ class sequences:
                 continue
             # TODO(jm): investigate the difference, for now use max!
             new_seq_val = max(seq_val, db7_seq_val)
-            _logger.critical(
+            _logger.warning(
                 f"Sequence [{dspace5_seq_name}] is not in sync v5:[{seq_val}] != v7:[{db7_seq_val}], using bigger value [{new_seq_val}]")
 
             # set value of the sequence in clarin 7 dspace database

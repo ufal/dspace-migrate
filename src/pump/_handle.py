@@ -20,7 +20,7 @@ class handles:
         self._handles = {}
         self._imported = 0
 
-        js = read_json(file_str)
+        js = read_json(file_str) or []
         for h in js:
             res_type_id = h['resource_type_id']
             res_id = h['resource_id']

@@ -16,12 +16,15 @@ class bundles:
     ]
 
     def __init__(self, bundle_file_str: str, item2bundle_file_str: str):
-        self._bundles = read_json(bundle_file_str)
-        self._item2bundle = read_json(item2bundle_file_str)
+        self._bundles = read_json(bundle_file_str) or []
+        self._item2bundle = read_json(item2bundle_file_str) or []
         self._imported = {
             "bundles": 0,
         }
         self._id2uuid = {}
+
+        if not self._item2bundle:
+            _logger.info(f"Empty input: [{item2bundle_file_str}].")
 
         if not self._bundles:
             _logger.info(f"Empty input: [{bundle_file_str}].")

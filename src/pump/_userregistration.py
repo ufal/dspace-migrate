@@ -13,7 +13,7 @@ class userregistrations:
     ]
 
     def __init__(self, ur_file_str: str):
-        self._ur = read_json(ur_file_str)
+        self._ur = read_json(ur_file_str) or []
         self._imported = {
             "users": 0,
         }
