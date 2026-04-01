@@ -129,7 +129,7 @@ class collections:
             if col['logo_bitstream_id'] is not None:
                 self._logos[str(col_id)] = col["logo_bitstream_id"]
 
-            # greate group
+            # create group
             # template_item_id, workflow_step_1, workflow_step_3, admin are not implemented,
             # because they are null in all data
             ws2 = col['workflow_step_2']

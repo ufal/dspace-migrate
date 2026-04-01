@@ -1,4 +1,4 @@
-Copy sql dumps to `../input/`:
+Copy SQL dumps to `../input/`:
 
 ```
 ls ../input/dump

@@ -1,4 +1,5 @@
 import logging
+import time
 # from json import JSONDecodeError
 from ._http import response_to_json
 
@@ -6,6 +7,16 @@ _logger = logging.getLogger("dspace.rest")
 from dspace_rest_client import client  # noqa
 
 ANONYM_EMAIL = True
+
+# HTTP retry configuration
+HTTP_MAX_RETRIES = 3
+HTTP_RETRY_DELAY = 1  # seconds
+HTTP_RETRY_BACKOFF = 1.5
+HTTP_RETRYABLE_CODES = [500, 502, 503, 504, 408, 429]
+
+# Circuit breaker for persistent errors
+HTTP_CIRCUIT_BREAKER_THRESHOLD = 5  # consecutive errors before circuit opens
+HTTP_CIRCUIT_BREAKER_TIMEOUT = 60  # seconds before retry
 
 
 def ascii(s, default="unknown"):
@@ -28,6 +39,18 @@ def progress_bar(arr):
     return tqdm(arr, mininterval=mininterval, maxinterval=2 * mininterval)
 
 
+def sanitize_log_content(content, max_length=200):
+    """Sanitize content for logging to prevent log injection."""
+    if not content:
+        return "No content"
+    # Convert to string and limit length
+    sanitized = str(content)[:max_length]
+    # Remove/replace potentially dangerous characters for log injection
+    sanitized = sanitized.replace('\n', '\\n').replace(
+        '\r', '\\r').replace('\t', '\\t')
+    return sanitized
+
+
 class rest:
     """
         Serves as proxy to Dspace REST API.
@@ -41,6 +64,10 @@ class rest:
         self._acceptable_resp = []
         self._get_cnt = 0
         self._post_cnt = 0
+
+        # Circuit breaker: tracks consecutive errors to prevent overwhelming a failing server
+        self._consecutive_500_errors = 0
+        self._circuit_breaker_open_time = None
 
         client.check_response = lambda x, y: self._resp_check(x, y)
         self._response_map = {
@@ -82,7 +109,7 @@ class rest:
 
     def clarin_put_handles(self, handle_arr: list):
         """
-            Import handles which have not objects into database.
+            Import handles which have no objects into database.
             Other handles are imported by dspace objects.
             Mapped table: handles
         """
@@ -110,7 +137,7 @@ class rest:
 
     def fetch_metadata_schemas(self):
         """
-            Gel all existing data from table metadataschemaregistry.
+            Get all existing data from table metadataschemaregistry.
         """
         url = 'core/metadataschemas'
         arr = self._fetch(url, self.get_many, None)
@@ -135,7 +162,7 @@ class rest:
 
     def fetch_schema(self, object_id):
         """
-            Gel all existing data from table metadataschemaregistry.
+            Get all existing data from table metadataschemaregistry.
         """
         url = 'core/metadataschemas'
         return self._fetch(url, self.get_one, None, object_id=object_id)
@@ -180,7 +207,7 @@ class rest:
 
     def put_collection_submitter(self, col_id: int):
         url = f'core/collections/{col_id}/submittersGroup'
-        _logger.debug(f"Adding editor group to [{col_id}] using [{url}]")
+        _logger.debug(f"Adding submitter group to [{col_id}] using [{url}]")
         return list(self._iput(url, [{}], [{}]))[0]
 
     def put_collection_bitstream_read_group(self, col_id: int):
@@ -432,8 +459,20 @@ class rest:
 
     def put_item(self, param: dict, data: dict):
         url = 'clarin/import/item'
+        item_info = ""
+        if 'uuid' in (data or {}):
+            item_info = f" UUID: {data.get('uuid', 'unknown')}"
+        elif 'id' in (param or {}):
+            item_info = f" ID: {param.get('id', 'unknown')}"
+
+        _logger.debug(f"Importing item{item_info}")
         _logger.debug(f"Importing [][{param}] using [{url}]")
-        return list(self._iput(url, [data], [param]))[0]
+        result = list(self._iput(url, [data], [param]))[0]
+
+        if result is None:
+            _logger.error(f"Failed to import item{item_info}")
+
+        return result
 
     def put_item_to_col(self, item_uuid: str, data: list):
         url = f'clarin/import/item/{item_uuid}/mappedCollections'
@@ -498,36 +537,122 @@ class rest:
             assert len(params) == len(arr)
 
         for i, data in enumerate(progress_bar(arr)):
-            try:
-                param = params[i] if params is not None else None
-                r = self.post(url, params=param, data=data)
-                if not r.ok:
-                    raise Exception(r)
-                try:
-                    js = None
-                    if len(r.content or '') > 0:
-                        js = response_to_json(r)
-                    yield js
-                except Exception:
-                    yield r
-            except Exception as e:
-                ascii_data = ascii(data)
-                if ANONYM_EMAIL:
-                    # poor man's anonymize
-                    if "@" in ascii_data or "email" in ascii_data:
-                        ascii_data = ascii_data[:5]
-                if len(ascii_data) > 80:
-                    ascii_data = f"{ascii_data[:70]}..."
-                msg_r = ""
-                try:
-                    msg_r = str(r)
-                except Exception:
-                    pass
-
-                msg = f'POST [{url}] for [{ascii_data}] failed. Exception: [{str(e)}][{msg_r}]'
-                _logger.error(msg)
-                yield None
+            param = params[i] if params is not None else None
+            result = self._post_with_retry(url, data, param, i, len(arr))
+            yield result
         _logger.debug(f"Imported [{url}] successfully")
+
+    def _post_with_retry(self, url: str, data, param, item_index: int, total_items: int):
+        """POST with retry logic for handling temporary server errors"""
+
+        # Check if circuit breaker is blocking requests due to consecutive errors
+        if self._is_circuit_breaker_open():
+            _logger.warning(
+                f"Circuit breaker open - skipping request to [{url}] (too many consecutive 500 errors)")
+            return None
+
+        ascii_data = ascii(data)
+        if ANONYM_EMAIL:
+            # Truncate data containing email addresses for privacy in logs
+            if "@" in ascii_data or "email" in ascii_data:
+                ascii_data = ascii_data[:5]
+        if len(ascii_data) > 80:
+            ascii_data = f"{ascii_data[:70]}..."
+
+        last_exception = None
+        last_response = None
+
+        for attempt in range(HTTP_MAX_RETRIES):
+            try:
+                r = self.post(url, params=param, data=data)
+
+                if r.ok:
+                    # Success - reset circuit breaker and return parsed response
+                    self._handle_circuit_breaker(r.status_code)
+                    try:
+                        js = None
+                        if len(r.content or '') > 0:
+                            js = response_to_json(r)
+                        if attempt > 0:
+                            _logger.debug(
+                                f"POST [{url}] succeeded on attempt {attempt + 1}/{HTTP_MAX_RETRIES}")
+                        return js
+                    except Exception:
+                        return r
+
+                # Handle HTTP errors
+                elif r.status_code in HTTP_RETRYABLE_CODES:
+                    last_response = r
+                    self._handle_circuit_breaker(r.status_code)
+                    retry_delay = HTTP_RETRY_DELAY * (HTTP_RETRY_BACKOFF ** attempt)
+
+                    if attempt == HTTP_MAX_RETRIES - 1:
+                        # Last attempt - no retry will happen
+                        _logger.warning(
+                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES}) - final attempt")
+                    elif attempt == 0:
+                        # First attempt - log with retry info
+                        _logger.warning(
+                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES}) - retrying in {retry_delay}s")
+                    else:
+                        _logger.debug(
+                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES})")
+
+                    if attempt < HTTP_MAX_RETRIES - 1:
+                        time.sleep(retry_delay)
+
+                        # Re-authenticate on certain errors
+                        if r.status_code in [401, 403]:
+                            _logger.debug("Re-authenticating due to auth error")
+                            if not self.client.authenticate():
+                                _logger.warning("Re-authentication failed")
+                                break
+                        continue
+                else:
+                    # Non-retryable error
+                    last_response = r
+                    _logger.error(
+                        f"[FAILED] POST [{url}] failed with non-retryable HTTP {r.status_code} for [{ascii_data}]: {r.text}")
+                    return None
+
+            except Exception as e:
+                last_exception = e
+                retry_delay = HTTP_RETRY_DELAY * (HTTP_RETRY_BACKOFF ** attempt)
+
+                if attempt == 0 or attempt == HTTP_MAX_RETRIES - 1:
+                    _logger.warning(
+                        f"POST [{url}] exception (attempt {attempt + 1}/{HTTP_MAX_RETRIES}): {str(e)}")
+                else:
+                    _logger.debug(
+                        f"POST [{url}] exception (attempt {attempt + 1}/{HTTP_MAX_RETRIES}): {str(e)}")
+
+                if attempt < HTTP_MAX_RETRIES - 1:
+                    time.sleep(retry_delay)
+                    continue
+
+        # All retries exhausted
+        msg_r = ""
+        try:
+            msg_r = str(last_response) if last_response else ""
+        except Exception:
+            pass
+
+        # Provide detailed error information with sanitized content
+
+        if last_response:
+            status_code = getattr(last_response, 'status_code', 'Unknown')
+            if hasattr(last_response, 'text'):
+                error_text = sanitize_log_content(last_response.text)
+                error_detail = f"HTTP {status_code}: {error_text}"
+            else:
+                error_detail = f"HTTP {status_code}: No response text"
+        else:
+            error_detail = sanitize_log_content(
+                str(last_exception) if last_exception else "Unknown error")
+
+        msg = f"POST [{url}] for [{ascii_data}] failed after {HTTP_MAX_RETRIES} attempts. Final error: {error_detail}"
+        _logger.error(msg)
+        return None
 
     # =======
 
@@ -548,6 +673,37 @@ class rest:
         url = self.endpoint + '/' + command
         self._post_cnt += 1
         return self.client.api_post(url, params or {}, data or {})
+
+    def _is_circuit_breaker_open(self):
+        """Check if circuit breaker is open due to too many consecutive failures"""
+        if self._circuit_breaker_open_time is None:
+            return False
+
+        # Check if timeout period has passed
+        if time.time() - self._circuit_breaker_open_time > HTTP_CIRCUIT_BREAKER_TIMEOUT:
+            _logger.info("Circuit breaker timeout expired - attempting to close circuit")
+            self._circuit_breaker_open_time = None
+            self._consecutive_500_errors = 0
+            return False
+
+        return True
+
+    def _handle_circuit_breaker(self, status_code):
+        """Update circuit breaker state based on response"""
+        if status_code == 500:
+            self._consecutive_500_errors += 1
+            if self._consecutive_500_errors >= HTTP_CIRCUIT_BREAKER_THRESHOLD:
+                if self._circuit_breaker_open_time is None:
+                    self._circuit_breaker_open_time = time.time()
+                    _logger.error(
+                        f"Circuit breaker OPENED - {self._consecutive_500_errors} consecutive 500 errors. Will retry in {HTTP_CIRCUIT_BREAKER_TIMEOUT}s")
+        else:
+            # Reset on any non-500 response
+            if self._consecutive_500_errors > 0:
+                _logger.info(
+                    f"Circuit breaker reset - got non-500 response after {self._consecutive_500_errors} errors")
+            self._consecutive_500_errors = 0
+            self._circuit_breaker_open_time = None
 
     # =======
 

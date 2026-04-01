@@ -1,6 +1,6 @@
 settings = {
 
-    "handle_prefix": "http://hdl.handle.net/",
+    "handle_prefix": ["http://hdl.handle.net/", "https://hdl.handle.net/"],
 
     "actions": ["READ", "WRITE", "OBSOLETE (DELETE)",
                 "ADD", "REMOVE", "WORKFLOW_STEP_1",

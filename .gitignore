@@ -144,3 +144,4 @@ __logs
 input
 *.bak
 .env*
+__temp

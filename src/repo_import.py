@@ -23,7 +23,7 @@ def verify_disabled_mailserver():
         Is the email server really off?
     """
     email_s_off = input("Please make sure your email server is turned off. "
-                        "Otherwise unbearable amount of emails will be sent. "
+                        "Otherwise, an unbearable amount of emails will be sent. "
                         "Is your EMAIL SERVER really OFF? (Y/N)")
     if email_s_off.lower() not in ("y", "yes"):
         _logger.critical("The email server is not off.")

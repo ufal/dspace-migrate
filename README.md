@@ -1,13 +1,15 @@
-# Dspace-python-api
-used for blackbox testing, data-ingestion procedures
+[![Test dspace on dev-5](https://github.com/dataquest-dev/dspace-blackbox-testing/actions/workflows/test.yml/badge.svg)](https://github.com/dataquest-dev/dspace-blackbox-testing/actions/workflows/test.yml)
+
+# DSpace-python-api
+Used for blackbox testing and data-ingestion procedures.
 
 # How to migrate CLARIN-DSpace5.* to CLARIN-DSpace7.*
 
 ### Important:
 Make sure that your email server is NOT running because some of the endpoints that are used
-are sending emails to the input email addresses. 
+send emails to the input email addresses. 
 For example, when using the endpoint for creating new registration data, 
-there exists automatic function that sends email, what we don't want
+an automatic function exists that sends emails, which we don't want
 because we use this endpoint for importing existing data.
 ```sh
 grep mail.server.disabled local.cfg
@@ -18,31 +20,24 @@ true
 ```
 
 ### Prerequisites:
-1. Install CLARIN-DSpace7.*. (postgres, solr, dspace backend) - you can use `docker compose`. At this point keep your `local.cfg` minimal, you'll modify it when the migration is done.
+1. **Python 3.8+** (tested with 3.8.10 and 3.11)
 
-2. clone these sources
+2. Install CLARIN-DSpace7.*. (PostgreSQL, Solr, DSpace backend)
+   2.1. Clone python-api: https://github.com/ufal/dspace-python-api (branch `main`)
+   2.2. Clone submodules: `git submodule update --init libs/dspace-rest-python/`
 
-    2.1. Clone python-api: https://github.com/ufal/dspace-python-api (branch `main`)
-
-    2.2. Clone submodules:
-`git submodule update --init libs/dspace-rest-python/`
-
-3. Get database dump (old CLARIN-DSpace) and unzip it into `input/dump` directory in `dspace-python-api` project.
-
-
+3. Install Python dependencies:
+   ```bash
+   pip install -r requirements.txt
+   pip install -r libs/dspace-rest-python/requirements.txt
+   ```
+   
 ***
-4. Go to the `dspace/bin` in dspace7 installation and run the command `dspace database migrate force` (force because of local types).
-**NOTE:** `dspace database migrate force` creates default database data that may be not in database dump, so after migration, some tables may have more data than the database dump. Data from database dump that already exists in database is not migrated.
+4. Get database dump (old CLARIN-DSpace) and unzip it into `input/dump` directory in `dspace-python-api` project.
 
-5. Create an admin by running the command `dspace create-administrator` in the `dspace/bin`
-
-***
-### Prepare `dspace-python-api` project for migration
-
-
-```sh
-:~$ ls -R ./input
-
+5. Prepare `dspace-python-api` project for migration: copy the files used during migration into `input/` directory:
+```
+> ls -R ./input
 input:
 dump
 
@@ -50,64 +45,137 @@ input/dump:
 clarin-dspace.sql  clarin-utilities.sql
 
 ```
-- Create CLARIN-DSpace5.* databases (dspace, utilities) from dump. Either:
-  - run `scripts/start.local.dspace.db.bat` or use `scipts/init.dspacedb5.sh` directly with your database. 
-  - do the import manually
+**Note:** `input/icon/` contains license icons (PNG files).
+
+6. Copy `assetstore` from dspace5 to dspace7 (for bitstream import). `assetstore` is in the folder where you have installed DSpace `dspace/assetstore`.
+
+7. Create `dspace` database with extension `pgcrypto`.
+
+8. Go to the `dspace/bin` in DSpace 7 installation and run the command `dspace database migrate force` (force because of local types).
+**NOTE:** `dspace database migrate force` creates default database data that may not be in the database dump, so after migration, some tables may have more data than the database dump. Data from the database dump that already exists in the database is not migrated.
+
+9. Create an admin by running the command `dspace create-administrator` in the `dspace/bin`
+
+10. Create CLARIN-DSpace5.* databases (dspace, utilities) from dump.
+Run `scripts/start.local.dspace.db.bat` or use `scripts/init.dspacedb5.sh` directly with your database.
+
+- Manual import alternative:
+  ```sh
+  docker compose -p d7ws exec dspacedb createdb -p 5430 --username=dspace --owner=dspace --encoding=UNICODE clarin-dspace
+  docker compose -p d7ws exec dspacedb createdb -p 5430 --username=dspace --owner=dspace --encoding=UNICODE clarin-utilities
+  cat input/dump/clarin-utilities.sql | docker compose -p d7ws exec -T dspacedb psql -p 5430 --username=dspace clarin-utilities
+  cat input/dump/clarin-dspace.sql | docker compose -p d7ws exec -T dspacedb psql -p 5430 --username=dspace clarin-dspace
+  ```
+
+***
+11. Update `project_settings.py`
+
+## Configuration Options
+
+### Ignore Settings
+Configure items to skip during migration in the `"ignore"` section of `project_settings.py`:
+
+- **Missing license icons**: Add license labels to `"missing-icons"` array to ignore missing icon files during license import
+  ```python
+  "missing-icons": ["Inf", "OSI", "ND"]
+  ```
+
+- **Empty persons**: Add person IDs to `"epersons"` array to ignore empty/invalid person records
+  ```python  
+  "epersons": [
+      # ignore - empty person
+      198
+  ]
+  ```
+
+- **Metadata fields**: Add field names to `"fields"` array to ignore specific metadata fields during import
+  ```python
+  "fields": ['local.bitstream.file', 'local.bitstream.redirectToURL']
+  ```
+
+Additional practical notes:
+- You can use an internal backend IP for backend connection details.
+- With `"testing": True`, the mechanism described in https://github.com/ufal/dspace-migrate/issues/4#issuecomment-3052818633 can be used (if the mentioned file is present), but do not keep this in final production migration runs.
+  ```sh
+  docker compose -p d7ws exec dspace bash -c "mkdir -p /tmp/asset && pushd /tmp/asset && curl -LJO https://github.com/user-attachments/files/21145749/57024294293009067626820405177604023574.zip && mkdir -p /dspace/assetstore/57/02/42 && zcat 570242* > /dspace/assetstore/57/02/42/57024294293009067626820405177604023574 && popd && rm -rf /tmp/asset"
+  ```
+- If you use many custom licenses and their text was under `xmlui/page`, you can use the `licenses` mapping to automatically update URLs.
+
+12. Make sure that handle prefixes are configured in the backend configuration (`dspace.cfg`):
+   - Set your main handle prefix in `handle.prefix`
+   - Add all other handle prefixes to `handle.additional.prefixes`
+   - **Note:** The main prefix should NOT be included in `handle.additional.prefixes`
+   - **Example:** 
      ```
-      docker compose -p d7ws exec dspacedb createdb -p 5430 --username=dspace --owner=dspace --encoding=UNICODE clarin-dspace
-      docker compose -p d7ws exec dspacedb createdb -p 5430 --username=dspace --owner=dspace --encoding=UNICODE clarin-utilities
-      cat input/dump/clarin-utilities.sql | docker compose -p d7ws exec -T dspacedb psql -p 5430 --username=dspace clarin-utilities
-      cat input/dump/clarin-dspace.sql | docker compose -p d7ws exec -T dspacedb psql -p 5430 --username=dspace clarin-dspace
-      ```
-***
-- install dependencies for this project (ideally in a python venv)
-  ```
-  pip install -r requirements.txt
+     handle.prefix = 123456789
+     handle.additional.prefixes = 11858, 11234, 11372, 11346, 20.500.12801, 20.500.12800
+     ```
+
+- You can list existing prefixes from the old database with:
+  ```sql
+  select distinct(split_part(handle, '/', 1)) as prefix from handle;
   ```
 
-***
-- update `project_settings.py` with the db connection and admin user details
-  - You can use an internal backend IP
-  - With `"testing": True` the mechanism described in https://github.com/ufal/dspace-migrate/issues/4#issuecomment-3052818633 should kick in (if you also have the mentioned file)
-    ```
-    docker compose -p d7ws exec dspace bash -c "mkdir -p /tmp/asset && pushd /tmp/asset && curl -LJO https://github.com/user-attachments/files/21145749/57024294293009067626820405177604023574.zip && mkdir -p /dspace/assetstore/57/02/42 && zcat 570242* > /dspace/assetstore/57/02/42/57024294293009067626820405177604023574 && popd && rm -rf /tmp/asset"
-    ```
-    You don't want this in the final migration
-  - Think about the `ignore` section, usually you don't want to ignore eperson `198` (but you might have other that you won't be migrating)
-  - If you were using many custom licenses and their text was under `xmlui/page`
-    you can use the `licenses` hash to do an automatic udpate of the urls 
+## Version Date Fields Configuration
+
+**REQUIRED:** Configure version date fields in `project_settings.py` for version migration. This configuration is mandatory and must be explicitly set.
+
+Add the following to your `project_settings.py`:
+```python
+"version_date_fields": ["dc.date.issued", "dc.date.accessioned", "dc.date.created"]
+```
+
+### How it works:
+- **Purpose**: When migrating item versions, the system needs a date field to set the version date
+- **Fallback mechanism**: Fields are tried in order until one with a value is found
+- **Supported formats**: 
+  - `"dc.element.qualifier"` (e.g., `"dc.date.issued"`)
+  - `"dc.element"` (e.g., `"dc.date"`)
+- **Error handling**: If no configured field contains a date value for an item, that item's version migration is skipped with a critical error
+
+### Common configuration examples:
+```python
+"version_date_fields": ["dc.date.issued", "dc.date.accessioned"]
+```
 
 ***
-- Make sure, your backend configuration (`local.cfg`) includes all handle prefixes, that you use, in the `handle.additional.prefixes` property, 
-e.g.,`handle.additional.prefixes = 11858, 11234, 11372, 11346, 20.500.12801, 20.500.12800`. Get them from the old database:
-  ```
-  clarin-dspace=# select distinct(split_part(handle, '/', 1)) as prefix from handle;
-  ```
-
-- This project only migrates the data stored in the database(s) not the actual files. Copy `assetstore` from dspace5 to dspace7 (for bitstream import). `assetstore` is in the folder where you have installed DSpace `dspace/assetstore`.
-
-***
-### Run the migration
+13. Import: Run command `cd ./src && python repo_import.py`
 - **NOTE:** database must be up to date (`dspace database migrate force` must be called in the `dspace/bin`)
 - **NOTE:** dspace server must be running
-- run command `cd ./src && python repo_import.py`
-- check the logs (by default) in `__logs` for CRITICAL, ERROR or WARNING and especially when you see 500 errors check also the dspace.log (on backend in /dspace/log/dspace.log)
-- if you need to rerun the migration you simply drop (including the volumes) the compose project (or just the database as suggested in https://github.com/ufal/dspace-migrate/issues/4#issuecomment-3044358816) and recreate the admin account etc. (if your dumps are in dspacedb container you'll need to recreate those as well). Also consider wiping the migration logs and temp files.
+- Check logs in `__logs` for CRITICAL/ERROR/WARNING and inspect backend `/dspace/log/dspace.log` when encountering 500 errors.
+
+If you need to rerun migration:
+- Recreate environment/database and admin as needed:
   ```sh
   docker compose -p d7ws down --volumes
   docker compose --env-file .env -p d7ws -f docker/docker-compose.yml -f docker/docker-compose-rest.yml up -d
   docker compose --env-file .env -p d7ws -f docker/docker-compose.yml -f docker/docker-compose-rest.yml -f docker/cli.yml run --rm dspace-cli create-administrator -e test@test.edu -f Sys -l Admin -p password -c en -o UFAL
   docker compose -p d7ws exec dspace bash -c "mkdir -p /tmp/asset && pushd /tmp/asset && curl -LJO https://github.com/user-attachments/files/21145749/57024294293009067626820405177604023574.zip && mkdir -p /dspace/assetstore/57/02/42 && zcat 570242* > /dspace/assetstore/57/02/42/57024294293009067626820405177604023574 && popd && rm -rf /tmp/asset"
   ```
+- Clean migration logs/temp artifacts:
   ```sh
   rm -rf __logs/ src/__temp/ input/tempdbexport_v*
   ```
-  
 
-## !!!Migration notes:!!!
-- The values of table attributes that describe the last modification time of dspace object (for example attribute `last_modified` in table `Item`) have a value that represents the time when that object was migrated and not the value from migrated database dump.
+## Database Connection Improvements
+
+For long-running imports, the system includes automatic connection management:
+
+- **Connection reliability**: TCP keepalive prevents timeouts, automatic reconnection on failures
+- **Large dataset handling**: Tables >100k rows processed in 50k row chunks to prevent memory issues  
+- **Retry logic**: All operations retry up to 3 times with exponential backoff
+
+### Configuration
+
+Database settings in `src/pump/_db_config.py`:
+- `DB_CHUNK_SIZE = 50000` - Rows per chunk for large tables
+- `DB_MAX_RETRIES = 3` - Retry attempts on failure
+- `DB_CONNECT_TIMEOUT = 30` - Connection timeout in seconds
+
+## !!!Migration Notes:!!!
+- The values of table attributes that describe the last modification time of DSpace objects (for example attribute `last_modified` in table `Item`) have a value that represents the time when that object was migrated and not the value from the migrated database dump.
 - If you don't have valid and complete data, not all data will be imported.
-- check if license link contains XXX. This is of course unsuitable for production run!
+- Check if license link contains XXX. This is of course unsuitable for production runs!
 
 ## Check import consistency
 

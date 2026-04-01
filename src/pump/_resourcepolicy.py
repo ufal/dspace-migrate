@@ -111,7 +111,7 @@ class resourcepolicies:
                 'description': res_policy['rpdescription']
             }
 
-            # resource policy has defined eperson or group, not the both
+            # resource policy has defined eperson or group, not both
             # get eperson if it is not none
             if res_policy['eperson_id'] is not None:
                 params['eperson'] = repo.epersons.uuid(res_policy['eperson_id'])

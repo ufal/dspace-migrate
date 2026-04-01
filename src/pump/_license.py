@@ -102,7 +102,7 @@ class licenses:
                         data['icon'] = list(fin.read())
             except Exception as e:
                 _logger.error(
-                    f"Problem reading label icon [{os.path.abspath(icon_path)}] [{l_name}]: str(e)")
+                    f"Problem reading label icon [{os.path.abspath(icon_path)}] [{l_name}]: {str(e)}")
 
             try:
                 resp = dspace.put_license_label(data)
@@ -187,7 +187,7 @@ def update_license_def(env, lic_def_url: str):
     env_lic = env.get("licenses", {})
     if "to_replace_def_url" not in env_lic:
         _logger.info(
-            "License def URL is not replaced, absolute"
+            "License def URL is not replaced, absolute "
             "path to the new repo must match the old one!")
         return lic_def_url
 

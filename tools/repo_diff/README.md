@@ -14,7 +14,7 @@ Waiting for PID:7 /usr/local/bin/docker-entrypoint.sh
 
 1. Add settings to `diff_settings`, see [settings](diff_settings/tul.py). 
 
-1. Compare dspace databases:
+1. Compare DSpace databases:
 ```
 python diff.py --use=tul
 ```
@@ -34,9 +34,9 @@ Waiting for PID:7 /usr/local/bin/docker-entrypoint.sh
 
 1. Add settings to `diff_settings`, see [settings](diff_settings/zcu.py). 
 
-1. Start port forwarding for `dspace7` database on `port` specified in [settings](diff_settings/zcu.py).
+1. Start port forwarding for the `dspace7` database on the `port` specified in [settings](diff_settings/zcu.py).
 
-1. Compare dspace databases:
+1. Compare DSpace databases:
 ```
 python diff.py --use=zcu
 ```

@@ -34,7 +34,7 @@ def init_logging(
 
     found_stream = None
     for h in logger.handlers:
-        if isinstance(h, logging.StreamHandler):
+        if type(h) is logging.StreamHandler:
             found_stream = h
             break
     if found_stream is None:

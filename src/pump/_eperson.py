@@ -6,7 +6,7 @@ _logger = logging.getLogger("pump.eperson")
 
 def _emails(email):
     """
-        The eperson email could consist of more email, return all of them in the array.
+        The eperson email could consist of multiple emails; return all of them in the array.
         If the email doesn't contain `;` that means there is only one email without `;` separator.
     """
     if email is None:
@@ -15,7 +15,7 @@ def _emails(email):
     if ';' not in email:
         return [email]
 
-    # email value contains of two email, take just the first one.
+    # email value consists of two emails; take just the first one.
     # e.g., test@msn.com;name@gmail.com
     return email.split(';')
 
@@ -63,7 +63,7 @@ class epersons:
 
         # fill mapping email -> eperson_id
         for e in self._epersons:
-            # eperson email could consist of more emails, add eperson_id into everyone
+            # eperson email could consist of more emails, add eperson_id into every one
             for email in _emails(e['email']):
                 self._email2id[email] = e['eperson_id']
 
@@ -160,8 +160,6 @@ class groups:
         self._imported = {
             "group": 0,
         }
-        if not self._groups:
-            _logger.info(f"Empty input: [{egroups_file_str}].")
 
         self._id2uuid = {}
 

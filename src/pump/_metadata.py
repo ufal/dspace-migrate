@@ -253,7 +253,11 @@ class metadatas:
         # fill values
         for val in js_value:
             # Store item handle and item id connection in dict
-            if not val['text_value'].startswith(env["dspace"]["handle_prefix"]):
+            handle_prefixes = env["dspace"]["handle_prefix"]
+            if isinstance(handle_prefixes, str):
+                handle_prefixes = [handle_prefixes]
+
+            if not any(val['text_value'].startswith(prefix) for prefix in handle_prefixes):
                 continue
 
             # metadata_field_id 25 is Item's handle
@@ -481,7 +485,7 @@ class metadatas:
                 self._schemas_id2id_v5[str(meta_id)] = existing['id']
                 continue
 
-            # only prefix exists, but there is unique constraint on prefix in the databse
+            # only prefix exists, but there is unique constraint on prefix in the database
             existing = find_existing_prefix(schema['short_id'])
             if existing is not None:
                 _logger.warning(
