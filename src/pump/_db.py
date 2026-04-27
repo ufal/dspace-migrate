@@ -92,6 +92,26 @@ class db:
     def __init__(self, env: dict):
         self._conn = conn(env)
 
+    def _ensure_connection(self, attempt: int, max_retries: int):
+        if self._conn.is_connected():
+            return
+
+        had_previous_connection = self._conn._conn is not None
+        if had_previous_connection:
+            _logger.warning(
+                f"Database connection dropped, reconnecting... (attempt {attempt + 1}/{max_retries})"
+            )
+        else:
+            _logger.info(
+                f"Connecting to database [{self._conn.name}] at {self._conn.host}:{self._conn.port} "
+                f"(attempt {attempt + 1}/{max_retries})"
+            )
+        self._conn.reconnect()
+
+    def cursor_context(self):
+        """Return the underlying connection context manager (yields a cursor)."""
+        return self._conn
+
     def _exponential_backoff_sleep(self, attempt: int):
         """Calculate and perform exponential backoff sleep with max delay limit."""
         delay = DB_RETRY_BASE_DELAY * (2 ** attempt)
@@ -107,10 +127,7 @@ class db:
 
         for attempt in range(max_retries):
             try:
-                if not self._conn.is_connected():
-                    _logger.warning(
-                        f"Connection lost, reconnecting... (attempt {attempt + 1}/{max_retries})")
-                    self._conn.reconnect()
+                self._ensure_connection(attempt, max_retries)
 
                 if chunk_size:
                     return self._fetch_all_chunked(sql, col_names, chunk_size)
@@ -233,10 +250,7 @@ class db:
         for attempt in range(max_retries):
             try:
                 # Check connection health before executing
-                if not self._conn.is_connected():
-                    _logger.warning(
-                        f"Connection lost, reconnecting... (attempt {attempt + 1}/{max_retries})")
-                    self._conn.reconnect()
+                self._ensure_connection(attempt, max_retries)
 
                 with self._conn as cursor:
                     cursor.execute(sql)
@@ -276,10 +290,7 @@ class db:
 
         for attempt in range(max_retries):
             try:
-                if not self._conn.is_connected():
-                    _logger.warning(
-                        f"Connection lost, reconnecting... (attempt {attempt + 1}/{max_retries})")
-                    self._conn.reconnect()
+                self._ensure_connection(attempt, max_retries)
 
                 with self._conn as cursor:
                     if params is not None:
@@ -352,7 +363,23 @@ class db:
         return self.fetch_all(
             "SELECT table_name FROM information_schema.tables WHERE is_insertable_into = 'YES' AND table_schema = 'public'")
 
-    def table_count(self):
+    def table_count(self, exact: bool = True):
+        """Return {table_name: row_count} for all user tables.
+
+        When *exact* is True (default), issues COUNT(*) per table for
+        accurate results.
+        Set *exact=False* to use pg_stat_user_tables.n_live_tup
+        (faster but may be stale).
+        """
+        if not exact:
+            sql = (
+                "SELECT relname, COALESCE(n_live_tup, 0) "
+                "FROM pg_stat_user_tables "
+                "ORDER BY relname"
+            )
+            rows = self.fetch_all(sql) or []
+            return {name: int(cnt or 0) for name, cnt in rows}
+
         d = {}
         tables = self.all_tables()
         for table in tables:
@@ -362,8 +389,8 @@ class db:
             d[name] = count
         return d
 
-    def status(self):
-        d = self.table_count()
+    def status(self, exact: bool = True):
+        d = self.table_count(exact=exact)
         zero = ""
         msg = ""
         for name in sorted(d.keys()):
@@ -373,7 +400,8 @@ class db:
             else:
                 msg += f"{name: >40}: {int(count): >8d}\n"
 
-        _logger.info(f"\n{msg}Empty tables:\n\t{zero}")
+        approx_text = "(estimated counts)" if not exact else "(exact counts)"
+        _logger.info(f"\n{msg}Empty tables:\n\t{zero}\nStatus mode: {approx_text}")
         _logger.info(40 * "=")
 
 
@@ -405,6 +433,10 @@ class tester:
         self.raw_db_utilities_5 = raw_db_utilities_5
         self.raw_db_7 = raw_db_7
         self._repo = repo
+        self._test_name_width = 42
+
+    def _test_label(self, test_name: str) -> str:
+        return f"{str(test_name or 'Test'):>{self._test_name_width}}"
 
     @staticmethod
     def get_list_val(part: list, pos: int):
@@ -490,7 +522,7 @@ class tester:
 
         # Error msg is already logged
         if vals_l is None or vals_r is None:
-            _logger.error(f"Test [{test_n}]: FAILED")
+            _logger.error(f"Test [{self._test_label(test_n)}]: FAILED")
             return
 
         compare = test.get("compare", "=")
@@ -504,12 +536,13 @@ class tester:
         if compare in comparison_operations:
             ok = comparison_operations[compare]
         else:
-            _logger.error(f"Test [{test_n}]: Invalid comparison operator!")
+            _logger.error(
+                f"Test [{self._test_label(test_n)}]: Invalid comparison operator!")
 
         if ok:
-            _logger.info(f"Test [{test_n}]: OK")
+            _logger.info(f"Test [{self._test_label(test_n)}]: OK")
         else:
-            _logger.error(f"Test [{test_n}]: FAILED")
+            _logger.error(f"Test [{self._test_label(test_n)}]: FAILED")
 
 
 class differ:
@@ -559,6 +592,20 @@ class differ:
             filtered.append([row[idx] for idx in idxs])
         return filtered
 
+    @staticmethod
+    def _normalize_bool(value):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int) and value in [0, 1]:
+            return bool(value)
+        if isinstance(value, str):
+            val = value.strip().lower()
+            if val in ["t", "true", "1", "yes", "y"]:
+                return True
+            if val in ["f", "false", "0", "no", "n"]:
+                return False
+        return None
+
     def _cmp_values(self, table_name: str, vals5, only_in_5, vals7, only_in_7, do_not_show: bool):
         too_many_5 = ""
         too_many_7 = ""
@@ -603,6 +650,13 @@ class differ:
         cols5, vals5, cols7, vals7 = self._fetch_all_vals(db5, table_name)
         do_not_show = gdpr and "email" in nonnull
 
+        def _status_meta(v5_count: int, v7_count: int):
+            if v5_count == v7_count:
+                return "OK", _logger.info
+            if v7_count < v5_count:
+                return "CRIT", _logger.critical
+            return "WARN", _logger.warning
+
         len_vals5 = len(vals5 or [])
         len_vals7 = len(vals7 or [])
 
@@ -610,29 +664,88 @@ class differ:
             cols5, vals5, cols7, vals7 = self._fetch_all_vals(db5, table_name, sql)
             sql_info = True
 
-        msg = " OK " if len_vals5 == len_vals7 else " !!! WARN !!! "
-        _logger.info(
-            f"Table [{table_name: >20}] {msg} compared by len only v5:[{len_vals5}], v7:[{len_vals7}]")
+        status, log_fnc = _status_meta(len_vals5, len_vals7)
+        counts = f"v5:[{len_vals5:>8}], v7:[{len_vals7:>8}]"
+        log_fnc(
+            f"Table [{table_name: >20}] {status:<12} {counts}  compared by len only")
 
         for col_name in nonnull:
-            vals5_cmp = [x for x in self._filter_vals(vals5 or [], cols5 or [],
-                                                      [col_name]) if x[0] is not None]
-            vals7_cmp = [x for x in self._filter_vals(vals7 or [], cols7 or [],
-                                                      [col_name]) if x[0] is not None]
+            vals5_cmp = [x[0] for x in self._filter_vals(vals5 or [], cols5 or [],
+                                                         [col_name]) if x[0] is not None]
+            vals7_cmp = [x[0] for x in self._filter_vals(vals7 or [], cols7 or [],
+                                                         [col_name]) if x[0] is not None]
 
-            msg = " OK " if len(vals5_cmp) == len(vals7_cmp) else " !!! WARN !!! "
-            _logger.info(
-                f"Table [{table_name: >20}] {msg}  NON NULL [{col_name:>15}] v5:[{len(vals5_cmp):3}], v7:[{len(vals7_cmp):3}]")
+            status, log_fnc = _status_meta(len(vals5_cmp), len(vals7_cmp))
+            extra = ""
+            if str(col_name).lower() in ["withdrawn", "in_archive", "discoverable", "deleted"]:
+                vals5_true = sum(1 for v in vals5_cmp if self._normalize_bool(v) is True)
+                vals5_false = sum(
+                    1 for v in vals5_cmp if self._normalize_bool(v) is False)
+                vals5_other = len(vals5_cmp) - vals5_true - vals5_false
+
+                vals7_true = sum(1 for v in vals7_cmp if self._normalize_bool(v) is True)
+                vals7_false = sum(
+                    1 for v in vals7_cmp if self._normalize_bool(v) is False)
+                vals7_other = len(vals7_cmp) - vals7_true - vals7_false
+
+                vals5_other_txt = f", other={vals5_other}" if vals5_other else ""
+                vals7_other_txt = f", other={vals7_other}" if vals7_other else ""
+                extra = (
+                    f" (values v5:[true={vals5_true}, false={vals5_false}{vals5_other_txt}], "
+                    f"v7:[true={vals7_true}, false={vals7_false}{vals7_other_txt}])"
+                )
+            counts = f"v5:[{len(vals5_cmp):>8}], v7:[{len(vals7_cmp):>8}]"
+            log_fnc(
+                f"Table [{table_name: >20}] {status:<12} {counts}  NOT NULL [{col_name:>15}]{extra}")
 
         if sql_info:
-            _logger.info(
-                f"Table [{table_name: >20}]  !!! WARN !!!  SQL request: {sql}")
+            len_sql_v5 = len(vals5 or [])
+            len_sql_v7 = len(vals7 or [])
+            status, log_fnc = _status_meta(len_sql_v5, len_sql_v7)
+            counts = f"v5:[{len_sql_v5:>8}], v7:[{len_sql_v7:>8}]"
+            log_fnc(
+                f"Table [{table_name: >20}] {status:<12} {counts}  SQL request: {sql}")
 
     def diff_table_sql(self, db5, table_name: str, sql5, sql7, compare, process_ftor):
+        _logger.debug(f"[SQL-VALIDATION] {table_name}: preparing fetch v5 and v7")
+
+        chunk_size_5 = None
+        chunk_size_7 = None
+        sql5_normalized = str(sql5 or "").strip().lower()
+        sql7_normalized = str(sql7 or "").strip().lower()
+        expected_sql = f"select * from {table_name}".lower()
+        if sql5_normalized == expected_sql and sql7_normalized == expected_sql:
+            try:
+                row_count_5 = db5.fetch_one(f"SELECT COUNT(*) FROM {table_name}")
+                row_count_7 = self.raw_db_7.fetch_one(
+                    f"SELECT COUNT(*) FROM {table_name}")
+
+                if row_count_5 and row_count_5 > DB_LARGE_TABLE_THRESHOLD:
+                    chunk_size_5 = DB_CHUNK_SIZE
+                if row_count_7 and row_count_7 > DB_LARGE_TABLE_THRESHOLD:
+                    chunk_size_7 = DB_CHUNK_SIZE
+
+                if chunk_size_5 or chunk_size_7:
+                    _logger.debug(
+                        f"[SQL-VALIDATION] {table_name}: large table detected "
+                        f"(v5:{row_count_5}, v7:{row_count_7}) -> chunked fetch "
+                        f"(v5:{chunk_size_5 or 'off'}, v7:{chunk_size_7 or 'off'})"
+                    )
+            except Exception as e:
+                _logger.warning(
+                    f"[SQL-VALIDATION] {table_name}: could not pre-check row count, continuing without chunk hint. [{e}]"
+                )
+
         cols5 = []
-        vals5 = db5.fetch_all(sql5, col_names=cols5)
+        vals5 = db5.fetch_all(sql5, col_names=cols5, chunk_size=chunk_size_5)
+        _logger.debug(
+            f"[SQL-VALIDATION] {table_name}: fetched v5 rows [{len(vals5 or [])}]")
+
         cols7 = []
-        vals7 = self.raw_db_7.fetch_all(sql7, col_names=cols7)
+        vals7 = self.raw_db_7.fetch_all(sql7, col_names=cols7, chunk_size=chunk_size_7)
+        _logger.debug(
+            f"[SQL-VALIDATION] {table_name}: fetched v7 rows [{len(vals7 or [])}]")
+
         # special case where we have different names of columns but only one column to compare
         if compare == 0:
             vals5_cmp = [x[0] for x in vals5 if x[0] is not None]
@@ -647,11 +760,13 @@ class differ:
                 vals7, cols7, [compare]) if x[0] is not None]
 
         if process_ftor is not None:
+            _logger.debug(f"[SQL-VALIDATION] {table_name}: normalizing datasets")
             vals5_cmp, vals7_cmp = process_ftor(self._repo, vals5_cmp, vals7_cmp)
             # ignored
             if vals5_cmp is None and vals7_cmp is None:
                 return
 
+        _logger.debug(f"[SQL-VALIDATION] {table_name}: computing set differences")
         only_in_5 = list(set(vals5_cmp).difference(vals7_cmp))
         only_in_7 = list(set(vals7_cmp).difference(vals5_cmp))
         self._cmp_values(table_name, vals5, only_in_5, vals7, only_in_7, False)

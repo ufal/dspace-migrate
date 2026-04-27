@@ -1,12 +1,18 @@
 import logging
+import threading
 from datetime import datetime
-from ._utils import read_json, serialize, deserialize, time_method, progress_bar, log_before_import, log_after_import
+from ._utils import read_json, serialize, deserialize, time_method, progress_bar, log_before_import, log_after_import, run_tasks
 
 _logger = logging.getLogger("pump.item")
 
 # Format (strptime format, suffix to append, description)
 DATE_FORMATS = [
     ('%Y-%m-%d', None, 'YYYY-MM-DD'),     # 2024-01-15
+    ('%Y-%m-%dT%H:%M:%SZ', None, 'YYYY-MM-DDTHH:MM:SSZ'),  # 2022-08-21T10:00:11Z
+    ('%Y-%m-%dT%H:%M:%S.%fZ', None, 'YYYY-MM-DDTHH:MM:SS.sssZ'),  # 2022-08-21T10:00:11.123Z
+    ('%Y-%m-%dT%H:%M:%S%z', None, 'YYYY-MM-DDTHH:MM:SS±HHMM'),  # 2022-08-21T10:00:11+0000
+    # 2022-08-21T10:00:11.123+0000
+    ('%Y-%m-%dT%H:%M:%S.%f%z', None, 'YYYY-MM-DDTHH:MM:SS.sss±HHMM'),
     ('%Y-%m', '-01', 'YYYY-MM'),          # 2024-01 → 2024-01-01
     ('%Y', '-01-01', 'YYYY'),             # 2024 → 2024-01-01
     ('%d %b. %Y', None, 'DD MMM. YYYY'),  # 15 Jan. 2024
@@ -60,6 +66,21 @@ class items:
             "name": "item_hasMetadata",
             "left": ["sql", "db7", "one", "SELECT count(*) FROM metadatavalue where metadata_field_id in "
                                           "(select metadata_field_id from metadatafieldregistry where element = 'hasMetadata')"],
+            "right": ["val", 0]
+        },
+        {
+            "name": "item_notnull_in_archive",
+            "left": ["sql", "db7", "one", "SELECT count(*) FROM item WHERE in_archive IS NULL"],
+            "right": ["val", 0]
+        },
+        {
+            "name": "item_notnull_withdrawn",
+            "left": ["sql", "db7", "one", "SELECT count(*) FROM item WHERE withdrawn IS NULL"],
+            "right": ["val", 0]
+        },
+        {
+            "name": "item2bundle_notnull_bundle_id",
+            "left": ["sql", "db7", "one", "SELECT count(*) FROM item2bundle WHERE bundle_id IS NULL"],
             "right": ["val", 0]
         }
     ]
@@ -141,11 +162,15 @@ class items:
     def imported(self):
         return self._imported['items']
 
+    @property
+    def done(self):
+        return self._done
+
     def item(self, item_id: int):
         return self._id2item[str(item_id)]
 
     @time_method
-    def import_to(self, cache_file, dspace, handles, metadatas, epersons, collections):
+    def import_to(self, cache_file, dspace, handles, metadatas, epersons, collections, item_workers: int = 1):
         """
             Import data into database.
             Mapped tables: item, collection2item, workspaceitem, cwf_workflowitem,
@@ -170,7 +195,8 @@ class items:
         if "item" in self._done:
             _logger.info("Skipping item import")
         else:
-            self._item_import_to(dspace, handles, metadatas, epersons, collections)
+            self._item_import_to(dspace, handles, metadatas,
+                                 epersons, collections, item_workers)
             self._done.append("item")
             self.serialize(cache_file)
 
@@ -280,7 +306,7 @@ class items:
 
         log_after_import(log_key, expected, self.imported_wf)
 
-    def _item_import_to(self, dspace, handles, metadatas, epersons, collections):
+    def _item_import_to(self, dspace, handles, metadatas, epersons, collections, item_workers: int = 1):
         expected = len(self._items or {})
         log_key = "items"
         log_before_import(log_key, expected)
@@ -289,6 +315,7 @@ class items:
 
         ws_items = 0
         wf_items = 0
+        to_import = []
 
         # create other items
         for item in progress_bar(self._items):
@@ -337,16 +364,46 @@ class items:
                     f"Item without collection [{i_id}] cannot be imported here")
                 continue
 
-            try:
-                resp = dspace.put_item(params, data)
-                if resp is None:
-                    _logger.error(
-                        f'put_item: [{i_id}] failed - server returned None (detailed error logged above by REST client)')
-                else:
-                    self._id2uuid[str(i_id)] = resp['id']
-                    self._imported["items"] += 1
-            except Exception as e:
-                _logger.error(f'put_item: [{i_id}] failed [{str(e)}]')
+            to_import.append((i_id, params, data))
+
+        workers = max(1, int(item_workers or 1))
+        _logger.info(
+            f"Prepared [{len(to_import)}] items for API import with workers:[{workers}]")
+
+        if workers > 1 and len(to_import) > 1:
+            _logger.info(f"Parallel item import enabled with workers:[{workers}]")
+
+        local = threading.local()
+
+        def worker(task):
+            i_id, params, data = task
+            if workers == 1:
+                return dspace.put_item(params, data)
+
+            client = getattr(local, "dspace", None)
+            if client is None:
+                local.dspace = dspace.spawn_worker_client()
+                client = local.dspace
+            return client.put_item(params, data)
+
+        for task, resp, err in run_tasks(
+            to_import,
+            worker,
+            workers=workers,
+            desc=f"Importing items ({workers} workers)",
+        ):
+            i_id, _params, _data = task
+            if err is not None:
+                _logger.error(f'put_item: [{i_id}] failed [{str(err)}]')
+                continue
+
+            if resp is None:
+                _logger.error(
+                    f'put_item: [{i_id}] failed - server returned None (detailed error logged above by REST client)')
+                continue
+
+            self._id2uuid[str(i_id)] = resp['id']
+            self._imported["items"] += 1
 
         log_after_import(f'{log_key} no owning col:[{without_col}], ws items:[{ws_items}] wf items:[{wf_items}]',
                          expected, self.imported + without_col + ws_items + wf_items)
@@ -646,7 +703,7 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
     def raw_after_import(self, env, db7, db5_dspace, metadatas):
         # Migration process
         self._migrate_versions(env, db7, db5_dspace, metadatas)
-        self._check_sum(db7, db5_dspace, metadatas)
+        self._check_sum(env, db7, db5_dspace, metadatas)
 
     def get_newer_versions(self, item_id: int, metadatas):
         return self._get_versions(item_id, metadatas, metadatas.V5_DC_RELATION_ISREPLACEDBY_ID)
@@ -739,7 +796,7 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
 
         return previous_versions + [cur_handle[0]] + newer_versions
 
-    def _check_sum(self, db7, db5_dspace, metadatas):
+    def _check_sum(self, env, db7, db5_dspace, metadatas):
         """
             Check if item versions importing was successful
             Select item ids from CLARIN-DSpace5 which has some version metadata
@@ -775,11 +832,38 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
             # in v5, we stored it after item installation
 
             problematic.append(uuid7)
-        if problematic:
+        endpoint = ((env or {}).get("backend", {}).get("endpoint") or "").strip()
+        base_url = ""
+        if endpoint:
+            base_url = endpoint.rstrip('/')
+            for marker in ['/repository/server/api', '/server/api']:
+                if marker in base_url:
+                    base_url = base_url.split(marker)[0].rstrip('/')
+                    break
+
+        def _item_link(uuid: str):
+            if base_url:
+                return f"{base_url}/repository/items/{uuid}"
+            return uuid
+
+        max_warn = 50
+
+        def _log_problematic_versions(title: str, uuids: list):
+            if not uuids:
+                return
+            shown = uuids[:max_warn]
+            rest = uuids[max_warn:]
             _logger.warning(
-                f'We have [{len(problematic or [])}] versions in v7 `versionitem` that are not expected!')
-            for uuid in problematic:
-                _logger.warning(f'UUID: {uuid}')
+                f"{title} Showing first [{len(shown)}] of [{len(uuids)}]. Rest is in debug log.")
+            for uuid in shown:
+                _logger.warning(f'UUID: {uuid} [{_item_link(uuid)}]')
+            for uuid in rest:
+                _logger.debug(f'UUID: {uuid} [{_item_link(uuid)}]')
+
+        _log_problematic_versions(
+            f'We have [{len(problematic or [])}] versions in v7 `versionitem` that are not expected!',
+            problematic,
+        )
 
         # Check v5
         problematic = []
@@ -793,8 +877,7 @@ SELECT setval('versionhistory_seq', {versionhistory_new_id})
                 continue
 
             problematic.append(uuid5)
-        if problematic:
-            _logger.warning(
-                f'We have [{len(problematic)}] versions in v5 not migrated into `versionitem`!')
-            for uuid in problematic:
-                _logger.warning(f'UUID: {uuid}')
+        _log_problematic_versions(
+            f'We have [{len(problematic)}] versions in v5 not migrated into `versionitem`!',
+            problematic,
+        )

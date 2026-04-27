@@ -96,8 +96,28 @@ class groups:
         return self._imported['eperson']
 
     @property
+    def imported_default_groups(self):
+        return self._imported['default_groups']
+
+    @property
+    def imported_coll_groups(self):
+        return self._imported['coll_groups']
+
+    @property
+    def imported_total_groups(self):
+        return self._imported['eperson'] + self._imported['default_groups'] + self._imported['coll_groups']
+
+    @property
     def imported_g2g(self):
         return self._imported['g2g']
+
+    @property
+    def expected_eperson_groups(self):
+        return len(self._eperson or {})
+
+    @property
+    def expected_g2g(self):
+        return len(self._g2g or {})
 
     @property
     def anonymous(self):
@@ -154,6 +174,13 @@ class groups:
         log_before_import(log_key, expected)
 
         grps = []
+        existing_by_name = {}
+        try:
+            existing_groups = dspace.fetch_existing_epersongroups() or []
+            existing_by_name = {g.get('name'): g.get('id')
+                                for g in existing_groups if g.get('name') and g.get('id')}
+        except Exception as e:
+            _logger.warning(f"Cannot prefetch existing eperson groups: [{str(e)}]")
 
         for eg in progress_bar(self._eperson):
             g_id = eg['eperson_group_id']
@@ -171,7 +198,7 @@ class groups:
                 continue
 
             # get group metadata
-            g_meta = metadatas.value(groups.TYPE, g_id)
+            g_meta = metadatas.value(groups.TYPE, g_id) or {}
             if 'dc.title' not in g_meta:
                 _logger.error(f'Metadata for group [{g_id}] does not contain dc.title!')
                 continue
@@ -182,13 +209,36 @@ class groups:
             # the group_metadata contains the name of the group
             data = {'name': name, 'metadata': g_meta}
             grps.append(name)
+
+            existing_id = existing_by_name.get(name)
+            if existing_id is not None:
+                self._id2uuid[str(g_id)] = [existing_id]
+                self._imported["default_groups"] += 1
+                _logger.debug(
+                    f"Group [{name}] already exists, reusing id [{existing_id}]")
+                continue
+
             try:
-                # continue
+
                 resp = dspace.put_eperson_group({}, data)
+                if resp is None or 'id' not in resp:
+                    refreshed = dspace.fetch_existing_epersongroups() or []
+                    refreshed_id = next((g.get('id')
+                                        for g in refreshed if g.get('name') == name), None)
+                    if refreshed_id is not None:
+                        self._id2uuid[str(g_id)] = [refreshed_id]
+                        self._imported["default_groups"] += 1
+                        _logger.debug(
+                            f"Group [{name}] created concurrently, reusing id [{refreshed_id}]")
+                        continue
+                    raise RuntimeError(
+                        f"Backend rejected eperson group [{name}] for source id [{g_id}]"
+                    )
                 self._id2uuid[str(g_id)] = [resp['id']]
                 self._imported["eperson"] += 1
             except Exception as e:
                 _logger.error(f'put_eperson_group: [{g_id}] failed [{str(e)}]')
+                raise
 
         # sql_del = "delete from epersongroup where name='" + "' or name='".join(grps) + "' ;"
         # _logger.info(sql_del)

@@ -72,6 +72,13 @@ Run `scripts/start.local.dspace.db.bat` or use `scripts/init.dspacedb5.sh` direc
 
 ## Configuration Options
 
+### Backend Settings
+Configure importer runtime behavior in the `"backend"` section of `project_settings.py`:
+
+- **Testing mode behavior**: `"testing"`
+  - When `"testing": True`, importer uses fallback test bitstream metadata when the source bitstream file is missing.
+  - If repeated `put_bitstream` failures occur, importer logs a warning that includes fallback path/existence diagnostics.
+
 ### Ignore Settings
 Configure items to skip during migration in the `"ignore"` section of `project_settings.py`:
 
@@ -225,3 +232,6 @@ When the `--test` option is specified with table names:
 2. This simulates empty tables during the import process
 3. The migration logic is tested without requiring actual data
 4. The test JSON filename can be customized in `project_settings.py` under `"input"["test_json_filename"]`
+
+#### NOTE
+Deleted bitstreams are not imported in this configuration; this can be modified via the backend.testing property in project_settings.py.

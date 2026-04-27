@@ -1,5 +1,6 @@
 import logging
 import re
+from typing import Optional
 from ._group import groups
 from ._utils import read_json, time_method, serialize, deserialize, progress_bar, log_before_import, log_after_import
 
@@ -23,14 +24,16 @@ class collections:
     ITEM = "ITEM"
     BITSTREAM = "BITSTREAM"
 
-    def __init__(self, col_file_str: str, com2col_file_str: str, metadata_file_str: str):
+    def __init__(self, col_file_str: str, com2col_file_str: str,
+                 metadata_file_str: Optional[str] = None,
+                 col2group: Optional[dict] = None):
         self._col = read_json(col_file_str) or []
         self._com2col = read_json(com2col_file_str) or []
         self._imported = {
             "col": 0,
             "group": 0,
         }
-        self._metadata_values = read_json(metadata_file_str) or []
+        self._metadata_values = []
         self._id2uuid = {}
 
         self._logos = {}
@@ -48,15 +51,19 @@ class collections:
 
         # because the role DEFAULT_READ is without old group id in collection
         self._col2group = {}
-        col_def_read_rec = re.compile("COLLECTION_(.*)_DEFAULT_READ")
-        for meta in self._metadata_values:
-            if meta['resource_type_id'] != groups.TYPE:
-                continue
-            m_text = meta['text_value']
-            m = col_def_read_rec.search(m_text)
-            if m is None:
-                continue
-            self._col2group[int(m.group(1))] = meta['resource_id']
+        if col2group is not None:
+            self._col2group = col2group
+        else:
+            self._metadata_values = read_json(metadata_file_str) or []
+            col_def_read_rec = re.compile("COLLECTION_(.*)_DEFAULT_READ")
+            for meta in self._metadata_values:
+                if meta['resource_type_id'] != groups.TYPE:
+                    continue
+                m_text = meta['text_value']
+                m = col_def_read_rec.search(m_text)
+                if m is None:
+                    continue
+                self._col2group[int(m.group(1))] = meta['resource_id']
 
     def __len__(self):
         return len(self._col or {})

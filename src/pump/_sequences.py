@@ -52,7 +52,12 @@ class sequences:
             # TODO(jm): investigate the difference, for now use max!
             new_seq_val = max(seq_val, db7_seq_val)
             _logger.warning(
-                f"Sequence [{dspace5_seq_name}] is not in sync v5:[{seq_val}] != v7:[{db7_seq_val}], using bigger value [{new_seq_val}]")
+                "Sequence not in sync | "
+                f"name: {dspace5_seq_name:<36} | "
+                f"v5: {seq_val:>12} | "
+                f"v7: {db7_seq_val:>12} | "
+                f"using: {new_seq_val:>12}"
+            )
 
             # set value of the sequence in clarin 7 dspace database
             db7.exe_sql(f"SELECT setval('{dspace5_seq_name}', {new_seq_val})")

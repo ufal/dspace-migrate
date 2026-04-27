@@ -117,8 +117,10 @@ class communities:
                 # resource_type_id for community is 4
                 handle_com = handles.get(communities.TYPE, com_id)
                 if handle_com is None:
-                    _logger.critical(f"Cannot find handle for com [{com_id}]")
-                    continue
+                    raise RuntimeError(
+                        f"Cannot find handle for community [{com_id}]. "
+                        "Handle cache/data is inconsistent. Run with --resume=false to rebuild cache."
+                    )
 
                 data['handle'] = handle_com
 

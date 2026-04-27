@@ -1,5 +1,6 @@
 import logging
-from ._utils import read_json, time_method, serialize, deserialize, progress_bar, log_before_import, log_after_import
+import threading
+from ._utils import read_json, time_method, serialize, deserialize, progress_bar, log_before_import, log_after_import, run_tasks
 
 _logger = logging.getLogger("pump.bundle")
 
@@ -56,11 +57,12 @@ class bundles:
         return self._imported['bundles']
 
     @time_method
-    def import_to(self, dspace, metadatas, items):
+    def import_to(self, dspace, metadatas, items, bundle_workers: int = 1):
         expected = len(self)
         log_key = "bundles"
         log_before_import(log_key, expected)
 
+        tasks = []
         for item_id, bundle_arr in progress_bar(self._itemid2bundle.items()):
             for bundle_id in bundle_arr:
                 data = {}
@@ -68,17 +70,51 @@ class bundles:
                 if meta_bundle:
                     data['metadata'] = meta_bundle
                     data['name'] = meta_bundle['dc.title'][0]['value']
+                tasks.append((item_id, bundle_id, data))
 
-                try:
-                    item_uuid = items.uuid(item_id)
-                    if item_uuid is None:
-                        _logger.critical(f'Item UUID not found for [{item_id}]')
-                        continue
-                    resp = dspace.put_bundle(item_uuid, data)
-                    self._id2uuid[str(bundle_id)] = resp['uuid']
-                    self._imported["bundles"] += 1
-                except Exception as e:
-                    _logger.error(f'put_bundle: [{item_id}] failed [{str(e)}]')
+        workers = max(1, int(bundle_workers or 1))
+        if workers > 1 and len(tasks) > 1:
+            _logger.info(f"Parallel bundle import enabled with workers:[{workers}]")
+
+        local = threading.local()
+
+        def worker(task):
+            item_id, _bundle_id, data = task
+            item_uuid = items.uuid(item_id)
+            if item_uuid is None:
+                return None
+
+            if workers == 1:
+                return dspace.put_bundle(item_uuid, data)
+
+            client = getattr(local, "dspace", None)
+            if client is None:
+                local.dspace = dspace.spawn_worker_client()
+                client = local.dspace
+            return client.put_bundle(item_uuid, data)
+
+        for task, resp, err in run_tasks(
+            tasks,
+            worker,
+            workers=workers,
+            desc=f"Importing bundles ({workers} workers)",
+        ):
+            item_id, bundle_id, _data = task
+            if items.uuid(item_id) is None:
+                _logger.critical(f'Item UUID not found for [{item_id}]')
+                continue
+
+            if err is not None:
+                _logger.error(f'put_bundle: [{item_id}] failed [{str(err)}]')
+                continue
+
+            if not isinstance(resp, dict) or 'uuid' not in resp:
+                _logger.error(
+                    f'put_bundle: [{item_id}] failed [Invalid response: {resp}]')
+                continue
+
+            self._id2uuid[str(bundle_id)] = resp['uuid']
+            self._imported["bundles"] += 1
 
         log_after_import(log_key, expected, self.imported)
 

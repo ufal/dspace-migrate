@@ -1,7 +1,6 @@
 import logging
 import os
-import json
-import shutil
+import time
 
 from ._utils import time_method
 
@@ -29,9 +28,78 @@ _logger = logging.getLogger("pump.repo")
 
 
 def export_table(db, table_name: str, out_f: str):
+    try:
+        from tqdm import tqdm
+    except Exception:
+        tqdm = None
+
+    started = time.perf_counter()
+    total_rows = db.fetch_one(f'SELECT COUNT(*) FROM "{table_name}"') or 0
+    _logger.debug(f"[EXPORT] {table_name}: start rows={total_rows} -> {out_f}")
+
+    chunk_size = 20000
+    logged_step = 100000
+    exported = 0
+    first = True
+    is_jsonl = out_f.lower().endswith(".jsonl")
+
+    progress = None
+    if tqdm is not None and total_rows > 0:
+        progress = tqdm(
+            total=total_rows,
+            desc=f"export:{table_name}",
+            unit="rows",
+            mininterval=2,
+            dynamic_ncols=True,
+        )
+
     with open(out_f, 'w', encoding='utf-8') as fout:
-        js = db.fetch_one(f'SELECT json_agg(row_to_json(t)) FROM "{table_name}" t')
-        json.dump(js, fout)
+        if not is_jsonl:
+            fout.write('[')
+        with db.cursor_context() as cursor:
+            cursor.itersize = chunk_size
+            cursor.execute(f'SELECT row_to_json(t)::text FROM "{table_name}" t')
+            while True:
+                rows = cursor.fetchmany(chunk_size)
+                if not rows:
+                    break
+
+                serialized_rows = [row[0] for row in rows if row and row[0] is not None]
+                if serialized_rows:
+                    if is_jsonl:
+                        fout.write("\n".join(serialized_rows))
+                        fout.write("\n")
+                    else:
+                        chunk_text = ",".join(serialized_rows)
+                        if first:
+                            fout.write(chunk_text)
+                            first = False
+                        else:
+                            fout.write(',')
+                            fout.write(chunk_text)
+
+                exported += len(serialized_rows)
+                if progress is not None:
+                    progress.update(len(serialized_rows))
+                if progress is None and (exported % logged_step == 0 or exported == total_rows):
+                    took = time.perf_counter() - started
+                    speed = exported / took if took > 0 else 0
+                    _logger.info(
+                        f"[EXPORT] {table_name}: exported={exported}/{total_rows} rows elapsed={took:.1f}s speed={speed:.0f} rows/s"
+                    )
+
+        if not is_jsonl:
+            fout.write(']')
+
+    if progress is not None:
+        progress.close()
+
+    took = time.perf_counter() - started
+    size_mb = os.path.getsize(out_f) / (1024 * 1024)
+    speed = exported / took if took > 0 else 0
+    _logger.info(
+        f"[EXPORT] {table_name}: done rows={exported}/{total_rows} size={size_mb:.1f}MB elapsed={took:.1f}s speed={speed:.0f} rows/s"
+    )
 
 
 class repo:
@@ -42,9 +110,17 @@ class repo:
         self.raw_db_7 = db(env["db_dspace_7"])
 
         if not env["tempdb"]:
-            for path in [env["input"]["tempdbexport_v5"], env["input"]["tempdbexport_v7"]]:
-                if os.path.exists(path):
-                    shutil.rmtree(path)
+            run_id = time.strftime("run_%Y%m%d_%H%M%S") + f"_{os.getpid()}"
+            env["input"]["tempdbexport_v5"] = os.path.join(
+                env["input"]["tempdbexport_v5"], run_id)
+            env["input"]["tempdbexport_v7"] = os.path.join(
+                env["input"]["tempdbexport_v7"], run_id)
+            _logger.info(
+                f"Using temp export dirs v5=[{env['input']['tempdbexport_v5']}] v7=[{env['input']['tempdbexport_v7']}]"
+            )
+
+        export_cache_v5 = {}
+        export_cache_v7 = {}
 
         tables_db_5 = [x for arr in self.raw_db_dspace_5.all_tables() for x in arr]
         tables_utilities_5 = [x for arr in self.raw_db_utilities_5.all_tables()
@@ -61,8 +137,13 @@ class repo:
                 if not os.path.exists(test_json_path):
                     raise FileNotFoundError(f"Test JSON file not found: {test_json_path}")
                 return test_json_path
+            if table_name in export_cache_v5:
+                _logger.info(f"[TABLE] {table_name}: reusing exported file")
+                return export_cache_v5[table_name]
+
             os.makedirs(env["input"]["tempdbexport_v5"], exist_ok=True)
-            out_f = os.path.join(env["input"]["tempdbexport_v5"], f"{table_name}.json")
+            ext = "jsonl" if table_name == "metadatavalue" else "json"
+            out_f = os.path.join(env["input"]["tempdbexport_v5"], f"{table_name}.{ext}")
             if not env["tempdb"]:
                 if table_name in tables_db_5:
                     db = self.raw_db_dspace_5
@@ -71,28 +152,33 @@ class repo:
                 else:
                     _logger.warning(f"Table [{table_name}] not found in db.")
                     raise NotImplementedError(f"Table [{table_name}] not found in db.")
+                _logger.info(f"[TABLE] {table_name}: exporting")
                 export_table(db, table_name, out_f)
+            export_cache_v5[table_name] = out_f
             return out_f
 
         def _f_7(table_name):
             """ Dynamically export the table to json file and return path to it for DSpace 7. """
+            if table_name in export_cache_v7:
+                _logger.info(f"[TABLE] {table_name}@v7: reusing exported file")
+                return export_cache_v7[table_name]
+
             os.makedirs(env["input"]["tempdbexport_v7"], exist_ok=True)
             out_f = os.path.join(env["input"]["tempdbexport_v7"], f"{table_name}.json")
             if not env["tempdb"]:
+                _logger.info(f"[TABLE] {table_name}@v7: exporting")
                 export_table(self.raw_db_7, table_name, out_f)
+            export_cache_v7[table_name] = out_f
             return out_f
 
-        # load groups
         self.groups = groups(
             _f("epersongroup"),
             _f("group2group"),
         )
         self.groups.from_rest(dspace)
 
-        # load handles
         self.handles = handles(_f("handle"))
 
-        # load metadata
         self.metadatas = metadatas(
             env,
             dspace,
@@ -103,16 +189,18 @@ class repo:
             _f("metadataschemaregistry"),
         )
 
-        # load community
         self.communities = communities(
             _f("community"),
             _f("community2community"),
         )
 
+        collection_default_read_groups = self.metadatas.collection_default_read_groups()
+
         self.collections = collections(
             _f("collection"),
             _f("community2collection"),
-            _f("metadatavalue"),
+            None,
+            collection_default_read_groups,
         )
 
         self.registrationdatas = registrationdatas(

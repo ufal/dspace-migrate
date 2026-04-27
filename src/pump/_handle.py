@@ -29,11 +29,20 @@ class handles:
             arr.append(h)
 
     def __len__(self):
-        return len(self._handles or {})
+        return sum(
+            len(res_arr)
+            for by_res_type in (self._handles or {}).values()
+            for res_arr in (by_res_type or {}).values()
+        )
 
     @property
     def imported(self):
         return self._imported
+
+    def expected_import_count(self):
+        ext = len(self.get_handles_by_type(None, None) or [])
+        item = len(self.get_handles_by_type(items.TYPE, None) or [])
+        return ext + item
 
     # =============
 
@@ -58,14 +67,30 @@ class handles:
     # =============
 
     @time_method
-    def import_to(self, dspace):
+    def import_to(self, dspace, raw_db_7=None):
         # external
         arr = self.get_handles_by_type(None, None) or []
         expected = len(arr)
         log_key = "external handles"
         log_before_import(log_key, expected)
-        cnt = dspace.put_handles(arr)
-        log_after_import(log_key, expected, cnt)
+        existing_external = None
+        if raw_db_7 is not None:
+            existing_external = raw_db_7.fetch_one(
+                "SELECT COUNT(*) FROM handle WHERE resource_type_id IS NULL AND resource_id IS NULL"
+            ) or 0
+
+        if existing_external is not None and existing_external >= expected:
+            _logger.info(
+                f"Skipping external handle POSTs, already present in DB [{existing_external}/{expected}]"
+            )
+            cnt = expected
+        else:
+            cnt = dspace.put_handles(arr)
+            log_after_import(log_key, expected, cnt)
+            if cnt < expected:
+                raise RuntimeError(
+                    f"External handle import incomplete [{cnt}/{expected}]"
+                )
         self._imported += cnt
 
         # no object
@@ -73,8 +98,24 @@ class handles:
         expected = len(arr)
         log_key = "handles"
         log_before_import(log_key, expected)
-        cnt = dspace.clarin_put_handles(arr)
-        log_after_import(log_key, expected, cnt)
+        existing_items_none = None
+        if raw_db_7 is not None:
+            existing_items_none = raw_db_7.fetch_one(
+                f"SELECT COUNT(*) FROM handle WHERE resource_type_id = {items.TYPE} AND resource_id IS NULL"
+            ) or 0
+
+        if existing_items_none is not None and existing_items_none >= expected:
+            _logger.info(
+                f"Skipping item-without-object handle POSTs, already present in DB [{existing_items_none}/{expected}]"
+            )
+            cnt = expected
+        else:
+            cnt = dspace.clarin_put_handles(arr)
+            log_after_import(log_key, expected, cnt)
+            if cnt < expected:
+                raise RuntimeError(
+                    f"Handle import incomplete [{cnt}/{expected}]"
+                )
         self._imported += cnt
 
     # =============

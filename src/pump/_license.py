@@ -194,8 +194,13 @@ def update_license_def(env, lic_def_url: str):
     # Replace old site url to a new site url
     if env_lic["to_replace_def_url"] in lic_def_url:
         if 'XXX' in env_lic['replace_with_def_url']:
-            _logger.warning(f"New license contains XXX and is probably misconfigured: "
-                            f"{lic_def_url}")
+            _logger.warning(
+                "License URL replacement looks misconfigured: "
+                f"settings.licenses.replace_with_def_url contains placeholder 'XXX' "
+                f"[{env_lic.get('replace_with_def_url')}]. "
+                f"Source definition URL=[{lic_def_url}]. "
+                "Update project_settings.py to a real base URL, e.g. 'http://<host>/repository/static/'."
+            )
         lic_def_url = lic_def_url.replace(
             env_lic["to_replace_def_url"],
             env_lic["replace_with_def_url"]

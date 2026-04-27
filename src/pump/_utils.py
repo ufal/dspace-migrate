@@ -3,6 +3,8 @@ import os
 import logging
 from datetime import datetime, timezone
 from time import time as time_fnc
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm import tqdm
 
 
 _logger = logging.getLogger("pump.utils")
@@ -109,16 +111,27 @@ if os.environ.get("IMPORT_LIMIT", "0") != "0":
     _logger.critical(f"Using import limit [{IMPORT_LIMIT}]")
 
 
-def progress_bar(arr):
-    if len(arr) < 2:
-        return iter(arr)
+def progress_bar(arr, desc: str = None, total: int = None):
+    arr_len = None
     try:
-        from tqdm import tqdm
-    except Exception as e:
+        arr_len = len(arr)
+    except Exception:
+        arr_len = total
+
+    if arr_len is not None and arr_len < 2:
         return iter(arr)
 
-    mininterval = 5 if len(arr) < 500 else 10
-    return tqdm(arr, mininterval=mininterval, maxinterval=2 * mininterval)
+    mininterval = 5 if (arr_len is not None and arr_len < 500) else 10
+    kwargs = {
+        "mininterval": mininterval,
+        "maxinterval": 2 * mininterval,
+    }
+    if desc is not None:
+        kwargs["desc"] = desc
+    if total is not None:
+        kwargs["total"] = total
+
+    return tqdm(arr, **kwargs)
 
 
 def log_before_import(msg: str, expected: int):
@@ -127,5 +140,50 @@ def log_before_import(msg: str, expected: int):
 
 
 def log_after_import(msg: str, expected: int, imported: int):
-    prefix = "OK " if expected == imported else "!!! WARN !!! "
-    _logger.info(f"{prefix}Imported [{imported: >4d}] {msg}")
+    is_ok = expected == imported
+    status = "OK" if is_ok else "WARN"
+    counts = f"expected:[{expected:>8}], imported:[{imported:>8}]"
+    _logger.info(f"{status:<12} {counts}  {msg}")
+
+
+def run_tasks(tasks, worker, workers: int = 1, desc: str = None, on_result=None):
+    tasks = list(tasks or [])
+    workers = max(1, int(workers or 1))
+
+    if workers == 1 or len(tasks) < 2:
+        iterator = progress_bar(tasks, desc=desc)
+        for task in iterator:
+            try:
+                result = worker(task)
+                if on_result is not None:
+                    on_result(task, result, None, iterator)
+                yield task, result, None
+            except Exception as e:
+                if on_result is not None:
+                    on_result(task, None, e, iterator)
+                yield task, None, e
+        return
+
+    futures = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for task in tasks:
+            futures[executor.submit(worker, task)] = task
+
+        iterator = tqdm(
+            as_completed(futures),
+            total=len(futures),
+            desc=desc or f"workers:{workers}",
+            mininterval=5,
+        )
+
+        for future in iterator:
+            task = futures[future]
+            try:
+                result = future.result()
+                if on_result is not None:
+                    on_result(task, result, None, iterator)
+                yield task, result, None
+            except Exception as e:
+                if on_result is not None:
+                    on_result(task, None, e, iterator)
+                yield task, None, e

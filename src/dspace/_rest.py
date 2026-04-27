@@ -1,5 +1,6 @@
 import logging
 import time
+import threading
 # from json import JSONDecodeError
 from ._http import response_to_json
 
@@ -13,6 +14,8 @@ HTTP_MAX_RETRIES = 3
 HTTP_RETRY_DELAY = 1  # seconds
 HTTP_RETRY_BACKOFF = 1.5
 HTTP_RETRYABLE_CODES = [500, 502, 503, 504, 408, 429]
+HTTP_CONNECT_TIMEOUT = 10
+HTTP_READ_TIMEOUT = 120
 
 # Circuit breaker for persistent errors
 HTTP_CIRCUIT_BREAKER_THRESHOLD = 5  # consecutive errors before circuit opens
@@ -58,12 +61,23 @@ class rest:
         original python rest api by dspace developers
     """
 
-    def __init__(self, endpoint: str, user: str, password: str, auth: bool = True):
-        _logger.info(f"Initialise connection to DSpace REST backend [{endpoint}]")
+    def __init__(self, endpoint: str, user: str, password: str, auth: bool = True,
+                 reauth_minutes: int = 20):
+        thread = threading.current_thread()
+        _logger.debug(
+            f"Initialise connection to DSpace REST backend [{endpoint}] "
+            f"thread:[{thread.name}] id:[{thread.ident}]"
+        )
 
         self._acceptable_resp = []
         self._get_cnt = 0
         self._post_cnt = 0
+        self._user = user
+        self._password = password
+        self._auth = auth
+        self._reauth_minutes = reauth_minutes
+        self._reauth_seconds = max(0, int(reauth_minutes or 0) * 60)
+        self._last_auth_ts = 0.0
 
         # Circuit breaker: tracks consecutive errors to prevent overwhelming a failing server
         self._consecutive_500_errors = 0
@@ -79,12 +93,37 @@ class rest:
 
         self.client = client.DSpaceClient(
             api_endpoint=endpoint, username=user, password=password)
+        # Install a default per-request timeout on the underlying
+        # requests.Session. The pinned submodule libs/dspace-rest-python
+        # (api_post(url, params, json, retry=False) etc.) has no `timeout`
+        # kwarg and no **kwargs passthrough, so we cannot pass timeouts from
+        # the caller side without a TypeError. Wrapping `session.request`
+        # gives us the hardening behavior (no infinite hangs) uniformly for
+        # GET/POST/PUT/DELETE without modifying the submodule.
+        _default_timeout = (HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT)
+        _orig_request = self.client.session.request
+
+        def _request_with_default_timeout(method, url, **kwargs):
+            kwargs.setdefault("timeout", _default_timeout)
+            return _orig_request(method, url, **kwargs)
+
+        self.client.session.request = _request_with_default_timeout
         if auth:
             if not self.client.authenticate():
-                _logger.error(f'Error auth to dspace REST API at [{endpoint}]!')
+                _logger.error(
+                    f"Error auth to dspace REST API at [{endpoint}] "
+                    f"thread:[{thread.name}] id:[{thread.ident}]!"
+                )
                 raise ConnectionError("Cannot connect to dspace!")
-            _logger.debug(f"Successfully logged in to [{endpoint}]")
-        _logger.info(f"DSpace REST backend is available at [{endpoint}]")
+            self._last_auth_ts = time.time()
+            _logger.debug(
+                f"Successfully logged in to [{endpoint}] "
+                f"thread:[{thread.name}] id:[{thread.ident}]"
+            )
+        _logger.debug(
+            f"DSpace REST backend is available at [{endpoint}] "
+            f"thread:[{thread.name}] id:[{thread.ident}]"
+        )
         self.endpoint = endpoint.rstrip("/")
 
     # =======
@@ -96,6 +135,23 @@ class rest:
     @property
     def post_cnt(self):
         return self._post_cnt
+
+    def spawn_worker_client(self):
+        return rest(
+            self.endpoint,
+            self._user,
+            self._password,
+            self._auth,
+            self._reauth_minutes,
+        )
+
+    def verify_authentication(self, force: bool = True):
+        """Validate backend login/token before critical operations."""
+        ok = self._maybe_reauthenticate(force=force)
+        if not ok:
+            raise ConnectionError(
+                f"Cannot authenticate to DSpace backend [{self.endpoint}]")
+        return True
 
     # =======
 
@@ -529,7 +585,8 @@ class rest:
         return None
 
     def _put(self, url: str, arr: list, params: list = None):
-        return len(list(self._iput(url, arr, params)))
+        list(self._iput(url, arr, params))
+        return len(arr)
 
     def _iput(self, url: str, arr: list, params=None):
         _logger.debug(f"Importing {len(arr)} using [{url}]")
@@ -564,6 +621,7 @@ class rest:
 
         for attempt in range(HTTP_MAX_RETRIES):
             try:
+                self._maybe_reauthenticate()
                 r = self.post(url, params=param, data=data)
 
                 if r.ok:
@@ -571,14 +629,36 @@ class rest:
                     self._handle_circuit_breaker(r.status_code)
                     try:
                         js = None
-                        if len(r.content or '') > 0:
+                        content_len = len(r.content or '')
+                        if content_len > 0:
                             js = response_to_json(r)
+                        else:
+                            if 'clarin/import/core/bitstream' in str(url):
+                                _logger.warning(
+                                    f"POST [{url}] returned HTTP {r.status_code} with empty body; "
+                                    f"bitstream importer expects JSON with id. params=[{param}]"
+                                )
                         if attempt > 0:
                             _logger.debug(
                                 f"POST [{url}] succeeded on attempt {attempt + 1}/{HTTP_MAX_RETRIES}")
                         return js
                     except Exception:
                         return r
+
+                # Handle auth errors (recoverable via re-auth)
+                elif r.status_code in [401, 403]:
+                    last_response = r
+                    if attempt == HTTP_MAX_RETRIES - 1:
+                        _logger.warning(
+                            f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES}) - final attempt")
+                        break
+
+                    _logger.warning(
+                        f"POST [{url}] HTTP {r.status_code} (attempt {attempt + 1}/{HTTP_MAX_RETRIES}) - re-authenticating")
+                    if not self._maybe_reauthenticate(force=True):
+                        _logger.warning("Re-authentication failed")
+                        break
+                    continue
 
                 # Handle HTTP errors
                 elif r.status_code in HTTP_RETRYABLE_CODES:
@@ -654,6 +734,19 @@ class rest:
         _logger.error(msg)
         return None
 
+    def _maybe_reauthenticate(self, force: bool = False):
+        if not force:
+            if self._reauth_seconds <= 0:
+                return True
+            if self._last_auth_ts > 0 and (time.time() - self._last_auth_ts) < self._reauth_seconds:
+                return True
+
+        _logger.debug("Refreshing backend authentication token")
+        ok = self.client.authenticate()
+        if ok:
+            self._last_auth_ts = time.time()
+        return ok
+
     # =======
 
     def get_many(self, command: str, size: int = 1000):
@@ -672,6 +765,9 @@ class rest:
     def post(self, command: str, params=None, data=None):
         url = self.endpoint + '/' + command
         self._post_cnt += 1
+        # NOTE: pinned submodule's api_post(url, params, json, retry=False)
+        # does not accept `timeout`. The default timeout is installed at
+        # session level in __init__ (see _request_with_default_timeout).
         return self.client.api_post(url, params or {}, data or {})
 
     def _is_circuit_breaker_open(self):

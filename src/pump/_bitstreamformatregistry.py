@@ -23,6 +23,15 @@ class bitstreamformatregistry:
         }],
     ]
 
+    @staticmethod
+    def _is_unknown_format(short_description: str, description: str):
+        s = str(short_description or "").strip().lower()
+        d = str(description or "").strip().lower()
+        return (
+            s in ["unknown", "unknown data format"]
+            or d in ["unknown", "unknown data format"]
+        )
+
     def __init__(self, bfr_file_str: str, fe_file_str: str):
         self._reg = read_json(bfr_file_str) or []
         self._fe = read_json(fe_file_str) or []
@@ -78,7 +87,7 @@ class bitstreamformatregistry:
         if bfr_js is not None:
             for bf in bfr_js:
                 existing_bfr2id[bf['shortDescription']] = bf['id']
-                if bf['description'] == 'Unknown data format':
+                if self._is_unknown_format(bf.get('shortDescription'), bf.get('description')):
                     self._unknown_format_id = bf['id']
                 existing_bfr2ext[bf['id']] = bf['extensions']
 
@@ -106,6 +115,8 @@ class bitstreamformatregistry:
                 self._imported["existed"] += 1
                 _logger.debug(
                     f'Bitstreamformatregistry [{bf["short_description"]}] already exists!')
+                if self._is_unknown_format(bf.get('short_description'), bf.get('description')):
+                    self._unknown_format_id = ext_id
                 # check file extensions
                 old_ext = old_bfr2ext[bf_id]
                 new_ext = existing_bfr2ext[ext_id]
@@ -126,6 +137,8 @@ class bitstreamformatregistry:
                     resp = dspace.put_bitstreamregistry(data)
                     ext_id = resp['id']
                     self._imported["reg"] += 1
+                    if self._is_unknown_format(bf.get('short_description'), bf.get('description')):
+                        self._unknown_format_id = ext_id
                 except Exception as e:
                     _logger.error(f'put_bitstreamregistry: [{bf_id}] failed [{str(e)}]')
                     continue

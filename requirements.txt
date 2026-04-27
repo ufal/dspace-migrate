@@ -8,3 +8,5 @@ requests-toolbelt
 six
 pysolr~=3.9.0
 wheel
+psutil
+colorama>=0.4.6

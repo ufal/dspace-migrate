@@ -55,31 +55,94 @@ class epersons:
             _logger.info(f"Empty input: [{eperson_file_str}].")
 
         self._email2id = {}
+        self._netid2id = {}
         self._id2uuid = {}
 
         if not self._epersons:
             _logger.info(f"Empty input: [{eperson_file_str}].")
             return
 
+        self._rebuild_indexes()
+
+    def _rebuild_indexes(self):
+        self._email2id = {}
+        self._netid2id = {}
+
         # fill mapping email -> eperson_id
         for e in self._epersons:
             # eperson email could consist of more emails, add eperson_id into every one
             for email in _emails(e['email']):
-                self._email2id[email] = e['eperson_id']
+                normalized = str(email or "").strip().lower()
+                if normalized:
+                    self._email2id[normalized] = e['eperson_id']
+            netid = str(e.get('netid') or '').strip()
+            if netid:
+                self._netid2id[netid] = e['eperson_id']
 
     def __len__(self):
         return len(self._epersons or {})
 
     def by_email(self, email: str):
-        return self._email2id.get(email, None)
+        normalized = str(email or "").strip().lower()
+        return self._email2id.get(normalized, None)
 
     def uuid(self, eid: int):
-        assert isinstance(list(self._id2uuid.keys())[0], str)
         return self._id2uuid.get(str(eid), None)
 
     @property
     def imported(self):
         return self._imported['p']
+
+    @property
+    def mapped(self):
+        return len(self._id2uuid)
+
+    def hydrate_uuid_map(self, raw_db_7):
+        """Hydrate source eperson_id -> target uuid mapping from DB by email."""
+        cols = []
+        rows = raw_db_7.fetch_all(
+            "SELECT uuid, email, netid FROM eperson",
+            cols,
+        ) or []
+        ci = {name: idx for idx, name in enumerate(cols)}
+        uuid_i = ci.get("uuid")
+        email_i = ci.get("email")
+        netid_i = ci.get("netid")
+        if uuid_i is None:
+            return 0
+
+        mapped_now = 0
+        for row in rows:
+            e_uuid = row[uuid_i]
+            e_email = row[email_i] if email_i is not None else None
+            e_netid = row[netid_i] if netid_i is not None else None
+            if not e_uuid:
+                continue
+
+            candidate_ids = []
+            if e_email:
+                for email in _emails(e_email):
+                    normalized = str(email or '').strip().lower()
+                    if not normalized:
+                        continue
+                    src_id = self._email2id.get(normalized)
+                    if src_id is not None:
+                        candidate_ids.append(src_id)
+            if e_netid:
+                src_id = self._netid2id.get(str(e_netid).strip())
+                if src_id is not None:
+                    candidate_ids.append(src_id)
+
+            for src_id in candidate_ids:
+                key = str(src_id)
+                if key in self._id2uuid:
+                    continue
+                self._id2uuid[key] = str(e_uuid)
+                mapped_now += 1
+
+        if self._imported['p'] < len(self._id2uuid):
+            self._imported['p'] = len(self._id2uuid)
+        return mapped_now
 
     @time_method
     def import_to(self, env, dspace, metadatas):
@@ -92,6 +155,9 @@ class epersons:
 
         for e in progress_bar(self._epersons):
             e_id = e['eperson_id']
+
+            if str(e_id) in self._id2uuid:
+                continue
 
             if e_id in ignore_eids:
                 _logger.debug(f"Skipping eperson [{e_id}]")
@@ -121,10 +187,14 @@ class epersons:
             }
             try:
                 resp = dspace.put_eperson(params, data)
+                if resp is None or 'id' not in resp:
+                    raise RuntimeError(
+                        f"Backend rejected eperson import for source id [{e_id}]")
                 self._id2uuid[str(e_id)] = resp['id']
                 self._imported["p"] += 1
             except Exception as e:
                 _logger.error(f'put_eperson: [{e_id}] failed [{str(e)}]')
+                raise
 
         log_after_import(f"{log_key} ignored:[{ignored}]",
                          expected, self.imported + ignored)
@@ -135,8 +205,9 @@ class epersons:
         data = {
             "epersons": self._epersons,
             "id2uuid": self._id2uuid,
-            "email2id": self._email2id,
             "imported": self._imported,
+            # email2id and netid2id are derived indexes rebuilt by _rebuild_indexes()
+            # on deserialize, so they are not persisted.
         }
         serialize(file_str, data)
 
@@ -144,8 +215,8 @@ class epersons:
         data = deserialize(file_str)
         self._epersons = data["epersons"]
         self._id2uuid = data["id2uuid"]
-        self._email2id = data["email2id"]
         self._imported = data["imported"]
+        self._rebuild_indexes()
 
 
 # =============
@@ -154,6 +225,25 @@ class groups:
     """
         Mapped tables: epersongroup2eperson
     """
+
+    validate_table = [
+        ["epersongroup2eperson", {
+            "nonnull": ["eperson_group_id", "eperson_id"],
+        }],
+    ]
+
+    test_table = [
+        {
+            "name": "epersongroup2eperson_notnull_group",
+            "left": ["sql", "db7", "one", "select count(*) from epersongroup2eperson where eperson_group_id is null"],
+            "right": ["val", 0],
+        },
+        {
+            "name": "epersongroup2eperson_notnull_eperson",
+            "left": ["sql", "db7", "one", "select count(*) from epersongroup2eperson where eperson_id is null"],
+            "right": ["val", 0],
+        },
+    ]
 
     def __init__(self, egroups_file_str: str):
         self._groups = read_json(egroups_file_str) or []

@@ -1,5 +1,6 @@
 import logging
-from ._utils import read_json, time_method, serialize, deserialize, progress_bar, log_before_import, log_after_import
+import threading
+from ._utils import read_json, time_method, serialize, deserialize, log_before_import, log_after_import, run_tasks
 
 _logger = logging.getLogger("pump.resourcepolicy")
 
@@ -9,6 +10,35 @@ class resourcepolicies:
         SQL:
             delete from resourcepolicy ;
     """
+
+    validate_table = [
+        ["resourcepolicy", {
+            "sql": {
+                "5": "select count(*) from resourcepolicy where action_id = 0 and "
+                     "epersongroup_id in (select resource_id from metadatavalue where "
+                     "text_value = 'Anonymous' and resource_type_id = 6) "
+                     "and start_date is not null and resource_type_id = 0",
+                "7": "select count(*) from resourcepolicy "
+                     "where action_id = 0 and epersongroup_id in "
+                     "(select uuid from epersongroup where name = 'Anonymous') "
+                     "and start_date is not null and resource_type_id = 0",
+                "compare": 0,
+            }
+        }],
+        ["resourcepolicy", {
+            "sql": {
+                "5": "select count(*) from resourcepolicy where action_id = 0 and "
+                     "epersongroup_id in (select resource_id from metadatavalue where "
+                     "text_value = 'Anonymous' and resource_type_id = 6) "
+                     "and start_date is not null and resource_type_id = 2",
+                "7": "select count(*) from resourcepolicy "
+                     "where action_id = 0 and epersongroup_id in "
+                     "(select uuid from epersongroup where name = 'Anonymous') "
+                     "and start_date is not null and resource_type_id = 2",
+                "compare": 0,
+            }
+        }],
+    ]
 
     test_table = [
         {
@@ -65,41 +95,65 @@ class resourcepolicies:
         log_before_import(log_key, expected)
 
         dspace_actions = env["dspace"]["actions"]
+        backend = env.get("backend", {})
+        workers = max(1, int(backend.get("import_workers", 1) or 1))
         failed = 0
+        skipped_missing_bitstream = 0
+        skipped_deleted_target = 0
 
-        for res_policy in progress_bar(self._respol):
+        if workers > 1 and expected > 1:
+            _logger.info(
+                f"Parallel resourcepolicy import enabled with workers:[{workers}]")
+
+        local = threading.local()
+
+        def worker(res_policy):
             res_id = res_policy['resource_id']
             res_type_id = res_policy['resource_type_id']
             # If resourcepolicy belongs to some Item or Bundle, check if that Item/Bundle wasn't removed from the table.
             # Somehow, the resourcepolicy table could still have a reference to deleted items/bundles.
             if res_type_id in [repo.items.TYPE, repo.bundles.TYPE]:
                 if repo.uuid(res_type_id, res_id) is None:
-                    _logger.info(
-                        f"Cannot import resource policy [{res_id}] for the record with type [{res_type_id}] that has already been deleted.")
-                    continue
+                    return {
+                        "imported": False,
+                        "failed": 0,
+                        "skipped_deleted_target": 1,
+                        "skipped_missing_bitstream": 0,
+                    }
 
             res_uuid = repo.uuid(res_type_id, res_id)
+            if res_type_id == repo.bitstreams.TYPE and res_uuid is None:
+                return {
+                    "imported": False,
+                    "failed": 0,
+                    "skipped_missing_bitstream": 1,
+                }
             if res_uuid is None:
-                _logger.critical(
-                    f"Cannot find uuid for [{res_type_id}] [{res_id}] [{str(res_policy)}]")
-                continue
-            params = {}
-            if res_uuid is not None:
-                params['resource'] = res_uuid
+                return {
+                    "imported": False,
+                    "failed": 0,
+                    "skipped_missing_bitstream": 0,
+                    "log_critical": f"Cannot find uuid for [{res_type_id}] [{res_id}] [{str(res_policy)}]",
+                }
+            params = {'resource': res_uuid}
             # in resource there is action as id, but we need action as text
             actionId = res_policy['action_id']
 
             # control, if action is entered correctly
             if not dspace_actions:
-                _logger.error(
-                    "dspace_actions is None or empty. Cannot validate actionId.")
-                failed += 1
-                continue
+                return {
+                    "imported": False,
+                    "failed": 1,
+                    "skipped_missing_bitstream": 0,
+                    "log_error": "dspace_actions is None or empty. Cannot validate actionId.",
+                }
             if actionId is None or actionId < 0 or actionId >= len(dspace_actions):
-                _logger.error(
-                    f"Invalid actionId: {actionId}. Must be in range 0 to {len(dspace_actions) - 1}")
-                failed += 1
-                continue
+                return {
+                    "imported": False,
+                    "failed": 1,
+                    "skipped_missing_bitstream": 0,
+                    "log_error": f"Invalid actionId: {actionId}. Must be in range 0 to {len(dspace_actions) - 1}",
+                }
 
             # create object for request
             data = {
@@ -113,15 +167,29 @@ class resourcepolicies:
 
             # resource policy has defined eperson or group, not both
             # get eperson if it is not none
+            client = dspace
+            if workers > 1:
+                client = getattr(local, "dspace", None)
+                if client is None:
+                    local.dspace = dspace.spawn_worker_client()
+                    client = local.dspace
+
             if res_policy['eperson_id'] is not None:
                 params['eperson'] = repo.epersons.uuid(res_policy['eperson_id'])
                 try:
-                    resp = dspace.put_resourcepolicy(params, data)
-                    self._imported["respol"] += 1
+                    client.put_resourcepolicy(params, data)
+                    return {
+                        "imported": True,
+                        "failed": 0,
+                        "skipped_missing_bitstream": 0,
+                    }
                 except Exception as e:
-                    _logger.error(
-                        f'put_resourcepolicy: [{res_policy["policy_id"]}] failed [{str(e)}]')
-                continue
+                    return {
+                        "imported": False,
+                        "failed": 0,
+                        "skipped_missing_bitstream": 0,
+                        "log_error": f'put_resourcepolicy: [{res_policy["policy_id"]}] failed [{str(e)}]'
+                    }
 
             # get group if it is not none
             eg_id = res_policy['epersongroup_id']
@@ -129,7 +197,11 @@ class resourcepolicies:
                 # groups created with coll and comm are already in the group
                 group_list = repo.groups.uuid(eg_id)
                 if not group_list:
-                    continue
+                    return {
+                        "imported": False,
+                        "failed": 0,
+                        "skipped_missing_bitstream": 0,
+                    }
                 if len(group_list) > 1:
                     if len(group_list) != 2:
                         raise RuntimeError(
@@ -160,20 +232,86 @@ class resourcepolicies:
                 for group in group_list:
                     params['group'] = group
                     try:
-                        resp = dspace.put_resourcepolicy(params, data)
+                        client.put_resourcepolicy(params, data)
                         imported_groups += 1
                     except Exception as e:
-                        _logger.error(
-                            f'put_resourcepolicy: [{res_policy["policy_id"]}] failed [{str(e)}]')
-                if imported_groups > 0:
-                    self._imported["respol"] += 1
-                continue
+                        return {
+                            "imported": False,
+                            "failed": 0,
+                            "skipped_missing_bitstream": 0,
+                            "log_error": f'put_resourcepolicy: [{res_policy["policy_id"]}] failed [{str(e)}]'
+                        }
 
-            _logger.error(f"Cannot import resource policy {res_policy['policy_id']} "
-                          f"because neither eperson nor group is defined")
-            failed += 1
+                return {
+                    "imported": imported_groups > 0,
+                    "failed": 0,
+                    "skipped_missing_bitstream": 0,
+                }
 
-        log_after_import(f"{log_key}, failed:[{failed}]", expected, self.imported)
+            return {
+                "imported": False,
+                "failed": 1,
+                "skipped_deleted_target": 0,
+                "skipped_missing_bitstream": 0,
+                "log_error": f"Cannot import resource policy {res_policy['policy_id']} because neither eperson nor group is defined",
+            }
+
+        progress_stats = {
+            "skipped_deleted_target": 0,
+            "skipped_missing_bitstream": 0,
+        }
+
+        def on_result(_task, result, _err, iterator):
+            if result is not None:
+                progress_stats["skipped_deleted_target"] += int(
+                    result.get("skipped_deleted_target", 0) or 0)
+                progress_stats["skipped_missing_bitstream"] += int(
+                    result.get("skipped_missing_bitstream", 0) or 0)
+
+            if hasattr(iterator, "set_postfix"):
+                postfix = {
+                    "skipped_deleted": progress_stats["skipped_deleted_target"],
+                }
+                if progress_stats["skipped_missing_bitstream"] > 0:
+                    postfix["skipped_missing_bitstream"] = progress_stats["skipped_missing_bitstream"]
+                iterator.set_postfix(postfix, refresh=False)
+
+        for i, (task, result, err) in enumerate(run_tasks(
+            self._respol,
+            worker,
+            workers=workers,
+            desc=f"Importing resourcepolicies ({workers} workers)",
+            on_result=on_result,
+        )):
+            if err is not None:
+                raise err
+
+            if result.get("log_info"):
+                _logger.info(result["log_info"])
+            if result.get("log_error"):
+                _logger.error(result["log_error"])
+            if result.get("log_critical"):
+                _logger.critical(result["log_critical"])
+
+            if result.get("imported"):
+                self._imported["respol"] += 1
+
+            failed += int(result.get("failed", 0) or 0)
+            skipped_deleted_target += int(
+                result.get("skipped_deleted_target", 0) or 0)
+            skipped_missing_bitstream += int(
+                result.get("skipped_missing_bitstream", 0) or 0)
+
+        extra = f"{log_key}, failed:[{failed}]"
+        if skipped_deleted_target > 0:
+            extra = f"{extra}, skipped_deleted_target:[{skipped_deleted_target}]"
+            _logger.info(
+                "Skipped resource policies targeting deleted Item/Bundle records "
+                f"(count:[{skipped_deleted_target}])."
+            )
+        if skipped_missing_bitstream > 0:
+            extra = f"{extra}, skipped_missing_bitstream:[{skipped_missing_bitstream}]"
+        log_after_import(extra, expected, self.imported)
 
     # =============
 
