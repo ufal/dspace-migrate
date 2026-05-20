@@ -15,7 +15,7 @@ def _epersongroup_process(repo, v5data: list, v7data: list):
             "Cannot validate using _epersongroup_process because repo is None")
         return None, None
 
-    rec = re.compile("(COLLECTION|COMMUNITY)_(\d+)_(.*)")
+    rec = re.compile(r"(COLLECTION|COMMUNITY)_(\d+)_(.*)")
     v5data_new = []
     for val in v5data:
         m = rec.match(val)
